@@ -4,6 +4,7 @@ import signal
 import time
 import pika
 import structlog
+import setproctitle
 
 from worker.config import get_settings
 from worker.detector import classify_crop, track_frame, release_tracker, get_model
@@ -139,6 +140,7 @@ def process_frame(msg: dict, ch, method):
 
 
 def main():
+    setproctitle.setproctitle("sentinel-oc-worker")
     settings = get_settings()
     log.info("oc_worker_starting",
              rabbitmq_host=settings.rabbitmq_host,
