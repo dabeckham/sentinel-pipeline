@@ -15,13 +15,17 @@ class Settings(BaseSettings):
     minio_access_key: str = "sentinel"
     minio_secret_key: str = "sentinel"
     minio_use_ssl: bool = False
-    minio_bucket_crops: str = "crops"
+    # minio_bucket_crops removed — crops now travel in-memory via RabbitMQ (issue #13)
 
     mog2_history: int = 500
     mog2_var_threshold: float = 16.0
     mog2_detect_shadows: bool = True
     motion_min_contour_area: int = 500
     motion_frame_skip: int = 2
+
+    # Debug video (issue #14) — set MD_DEBUG_VIDEO=true to enable
+    md_debug_video: bool = False
+    md_debug_output_dir: str = "/ingest/debug"
 
     def rabbitmq_params(self):
         import pika

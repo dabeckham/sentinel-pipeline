@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     minio_access_key: str = "sentinel"
     minio_secret_key: str = "sentinel"
     minio_use_ssl: bool = False
-    minio_bucket_crops: str = "crops"
+    # minio_bucket_crops removed — crops now travel in-memory via RabbitMQ (issue #13)
     minio_bucket_snapshots: str = "snapshots"
 
     # OC_MODEL_NAME avoids collision with YOLO_MODEL in .env (which may name a future model)
