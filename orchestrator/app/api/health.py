@@ -15,6 +15,6 @@ class HealthResponse(BaseModel):
 async def health_check():
     return HealthResponse(
         status="ok",
-        version="0.3.0",
+        version="0.5.0",
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
