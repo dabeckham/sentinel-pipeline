@@ -4,6 +4,7 @@ import signal
 import time
 import pika
 import structlog
+import setproctitle
 
 from worker.config import get_settings
 from worker.motion import detect_motion
@@ -92,6 +93,7 @@ def process_job(msg: dict, ch, method):
 
 
 def main():
+    setproctitle.setproctitle("sentinel-md-worker")
     settings = get_settings()
     log.info("md_worker_starting",
              rabbitmq_host=settings.rabbitmq_host,
