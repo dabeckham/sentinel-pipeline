@@ -1,15 +1,16 @@
 # GPU override for OC workers — use with:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
 #
 # Pins OC workers to GPU 1 (device index 1) to avoid contention with
-# Frigate on GPU 0. Change GPU_DEVICE_ID to 0 if GPU 1 is unavailable
-# (e.g. Ollama is loaded and consuming VRAM).
+# Frigate on GPU 0. Change GPU_DEVICE_ID to 0 if GPU 1 is unavailable.
 
 services:
   oc-worker:
     build:
       context: ./oc-worker
       dockerfile: Dockerfile.gpu
+    networks:
+      - sentinel-net
     environment:
       OC_USE_GPU: "true"
       CUDA_VISIBLE_DEVICES: "0"
@@ -21,3 +22,8 @@ services:
             - driver: nvidia
               device_ids: ["${GPU_DEVICE_ID:-1}"]
               capabilities: [gpu]
+
+networks:
+  sentinel-net:
+    external: true
+    name: sentinel-pipeline_sentinel-net
