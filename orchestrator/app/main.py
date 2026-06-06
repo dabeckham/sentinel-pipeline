@@ -9,21 +9,54 @@ from app.config import get_settings
 log = structlog.get_logger()
 
 
+def _seed_admin():
+    """Create a default admin user if no users exist."""
+    from app.db import SessionLocal
+    from app.models.user import User, UserRole
+    from app.auth.password import hash_password
+    import os
+
+    db = SessionLocal()
+    try:
+        if db.query(User).count() == 0:
+            password = os.environ.get("ADMIN_DEFAULT_PASSWORD", "changeme")
+            user = User(
+                username="admin",
+                password_hash=hash_password(password),
+                role=UserRole.admin,
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            log.info("admin_user_seeded", username="admin",
+                     password_from_env=("ADMIN_DEFAULT_PASSWORD" in os.environ))
+    except Exception:
+        log.exception("admin_seed_error")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     log.info("sentinel_orchestrator_starting",
-             version="0.2.0",
+             version="0.3.0",
              rabbitmq_host=settings.rabbitmq_host,
              rabbitmq_user=settings.rabbitmq_user,
              ingest_path=settings.ingest_watch_path)
+
+    # Seed default admin if no users exist
+    _seed_admin()
 
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
 
     observer = start_watcher()
 
-    consumer_thread = threading.Thread(target=start_result_consumer, daemon=True, name="oc-result-consumer")
+    consumer_thread = threading.Thread(
+        target=start_result_consumer, daemon=True, name="oc-result-consumer"
+    )
     consumer_thread.start()
 
     yield
@@ -39,7 +72,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Sentinel Pipeline API",
         description="Distributed video analysis pipeline orchestrator",
-        version="0.1.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
 
@@ -51,9 +84,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Routers — added incrementally per phase
+    # Routers
     from app.api import health
+    from app.api import auth, jobs, tracks, stats, users, config_api, ws
+
     app.include_router(health.router, prefix="/api", tags=["health"])
+    app.include_router(auth.router, prefix="/api")
+    app.include_router(jobs.router, prefix="/api")
+    app.include_router(tracks.router, prefix="/api")
+    app.include_router(stats.router, prefix="/api")
+    app.include_router(users.router, prefix="/api")
+    app.include_router(config_api.router, prefix="/api")
+    app.include_router(ws.router)  # /ws/jobs — no /api prefix
 
     return app
 
