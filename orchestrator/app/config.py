@@ -51,10 +51,11 @@ class Settings(BaseSettings):
 
     @property
     def rabbitmq_url(self) -> str:
-        return (
-            f"amqp://{self.rabbitmq_user}:{self.rabbitmq_password}"
-            f"@{self.rabbitmq_host}:{self.rabbitmq_port}/{self.rabbitmq_vhost}"
-        )
+        from urllib.parse import quote
+        user = quote(self.rabbitmq_user, safe="")
+        password = quote(self.rabbitmq_password, safe="")
+        vhost = quote(self.rabbitmq_vhost, safe="")
+        return f"amqp://{user}:{password}@{self.rabbitmq_host}:{self.rabbitmq_port}/{vhost}"
 
     @property
     def cors_origins_list(self) -> list[str]:
