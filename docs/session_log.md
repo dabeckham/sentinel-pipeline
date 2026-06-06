@@ -229,6 +229,7 @@ Fix: renamed field `yolo_model` → `oc_model_name` (env var `OC_MODEL_NAME`, no
 - **2026-06-06 Session 2:** Deployment completed. Fixed .gitignore models/ scope bug, added PYTHONPATH to Dockerfile, committed orchestrator models. Full stack verified on 192.168.55.10.
 - **2026-06-06 Session 3:** Phase 2 all code written (orchestrator watcher+consumer, MD worker MOG2, OC worker YOLO11+ByteTrack). Fixed: inotify/NFS, INGEST_SOURCE_PATH collision, yolo26s model name, RabbitMQ no-users (manual rabbitmqctl). Pipeline fully deployed and verified end-to-end.
 - **2026-06-06 Session 4:** Phase 2 verified live on real driveway footage. All 5 services healthy. Jobs completing. Detections written to PostgreSQL (car/truck/bus, confidence 0.85-0.93). Snapshots in MinIO. Fixed ByteTrack IndexError (commit 0565647) — rebuild in progress. Backlog ~500 queued jobs draining.
+- **2026-06-06 Session 5:** Unintended power outage hit all systems mid-session. Pipeline auto-recovered via Docker restart policy. 41 of 529 jobs had completed before outage (170 tracks, 2358 detections). RabbitMQ durable queues and PostgreSQL survived intact. Two jobs left stuck in `oc_processing` (mid-flight at power loss). ByteTrack fix rebuild interrupted — needs re-run. Discord webhook integration set up for status notifications. Graceful crash/power-loss recovery added to Phase 5 scope (see below).
 
 ---
 
@@ -261,6 +262,70 @@ cd ~/sentinel-pipeline && docker compose up -d --force-recreate oc-worker
 
 ### Next Phase (Phase 3)
 Auth & REST API: JWT, roles (admin/operator/viewer), LAN trust mode, all endpoints, WebSocket for real-time job status.
+
+---
+
+## Phase 5 — Graceful Crash & Power-Loss Recovery (Detailed Spec)
+
+**User requirement (2026-06-06):** Each containerized node must detect and gracefully recover from unexpected shutdowns — including mid-task crashes, container restarts, and full building power outages where all services go down simultaneously.
+
+### Problem Statement
+
+Current failure modes with no recovery logic:
+1. **Job stuck in `oc_processing`** — oc-worker acks the message, updates job status to `oc_processing`, then dies mid-frame. On restart, the message is gone from RabbitMQ (already acked). Job never completes. Currently 2 jobs in this state from the 2026-06-06 outage.
+2. **Job stuck in `queued` after md-worker crash** — md-worker pulls from `ingest`, marks nothing in DB (status stays `queued`), dies mid-video. Message is nacked on reconnect (pika closes channel), message requeues — this one *already works* because md-worker uses `basic_ack` only on completion.
+3. **Orphaned motion_results frames** — if oc-worker crashes mid-job, the remaining unprocessed motion_results for that job are still in the queue and will be processed after restart. But the ByteTrack state (in-memory, keyed by job_id) is lost — tracker resets mid-stream, causing track_id discontinuities.
+4. **Orchestrator result_consumer crash** — oc_results messages acked before DB write fails → detection lost silently.
+5. **Full power outage** — all of the above simultaneously, plus RabbitMQ needs to confirm all queues+messages are durable (currently declared durable ✅).
+
+### Recovery Design (to implement in Phase 5)
+
+#### A. Orchestrator — Startup Recovery Sweep
+On `lifespan` startup (before serving requests), run a DB query:
+```python
+# Find jobs stuck in non-terminal states for > N minutes
+stale = session.query(Job).filter(
+    Job.status.in_(["oc_processing", "md_processing"]),
+    Job.updated_at < datetime.utcnow() - timedelta(minutes=10)
+).all()
+for job in stale:
+    job.status = "queued"  # reset to queued
+    # re-publish to ingest queue so md-worker re-processes
+    publisher.publish("ingest", {"job_id": job.id, "video_path": job.file_path, ...})
+```
+This covers the "full outage" case — on restart, orchestrator automatically re-queues any job that never finished.
+
+#### B. MD Worker — Idempotent Processing
+MD worker should set `job.status = "md_processing"` when it starts a job (currently not written). On crash+restart, RabbitMQ requeues (already works because pika nacks on channel close). But if orchestrator's recovery sweep fires first, the job gets re-queued redundantly. Fix: md-worker should check `job.status != "queued"` before processing and nack+discard duplicates.
+
+#### C. OC Worker — Pre-ack Checkpoint + Restart Recovery
+Two options:
+1. **Option 1 (simpler): Nack on startup for stale oc_processing jobs** — oc-worker startup queries DB for jobs in `oc_processing` and resets them to `queued` so orchestrator's sweep re-queues them. Lost frames go to DLX but job re-runs cleanly.
+2. **Option 2 (complex): At-least-once with dedup** — delay ack until after DB write + MinIO upload. Requires idempotent DB upserts (already done for tracks) and MinIO put-if-not-exists. This is the correct long-term solution.
+
+**Recommendation:** Implement Option 2 for oc-worker (ack after write), Option 1 for orchestrator sweep.
+
+#### D. Result Consumer (Orchestrator) — Ack After Write
+Currently `ch.basic_ack()` is called before the DB session commits. Swap order: commit first, ack after. If commit fails, message stays in queue and retries.
+
+#### E. RabbitMQ Queue Durability — Already Correct ✅
+All queues declared `durable=True` in `infra/rabbitmq/definitions.json`. Messages survive RabbitMQ restart. No change needed.
+
+#### F. Health-check Liveness vs Readiness
+Add a `/api/ready` endpoint that returns 503 until the startup recovery sweep completes. Docker healthcheck uses `/api/health` (liveness); load balancer uses `/api/ready` (readiness). Prevents jobs being sent to a node that's still recovering.
+
+### Immediate Fix Needed (Before Phase 5)
+Re-run ByteTrack fix build:
+```bash
+cd ~/sentinel-pipeline && docker compose build --no-cache oc-worker && docker compose up -d --force-recreate oc-worker
+```
+Manually reset the 2 stuck jobs:
+```sql
+UPDATE jobs SET status='queued' WHERE status='oc_processing';
+-- Then re-publish those job_ids to the ingest queue via orchestrator admin endpoint (Phase 3) or manual rabbitmqadmin publish
+```
+
+---
 
 ---
 
