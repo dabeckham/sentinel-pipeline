@@ -99,11 +99,15 @@ def track_frame(
     tracker = get_tracker(job_id)
     tracked = tracker.update_with_detections(detections)
 
+    if tracked.tracker_id is None or len(tracked) == 0:
+        return []
+
     results = []
-    for j, orig_idx in enumerate(valid):
-        track_id = int(tracked.tracker_id[j]) if tracked.tracker_id is not None else orig_idx
+    for j in range(len(tracked)):
+        # ByteTrack may return fewer items than input; map by index up to bounds
+        orig_idx = valid[j] if j < len(valid) else valid[-1]
         results.append({
-            "track_id": track_id,
+            "track_id": int(tracked.tracker_id[j]),
             "class_label": class_labels[orig_idx],
             "confidence": confidences[orig_idx],
             "bbox": bboxes[orig_idx],
