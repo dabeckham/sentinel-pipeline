@@ -1,7 +1,7 @@
 """MOG2-based motion detection. Returns per-frame results with base64-encoded crops."""
 import base64
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import cv2
 import numpy as np
 from worker.config import get_settings
@@ -11,7 +11,7 @@ from worker.config import get_settings
 class MotionFrame:
     frame_index: int
     timestamp_ms: int
-    bounding_boxes: list[dict]   # [{x, y, w, h}, ...]
+    bounding_boxes: list[dict]   # [{x, y, w, h}, ...] in original resolution
     crops_b64: list[str]         # base64-encoded JPEG per bbox (no MinIO round-trip)
 
 
@@ -25,6 +25,11 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
     frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # Scale factor for MOG2 — detect on a smaller frame, crop from original
+    scale = s.motion_scale
+    small_w = max(1, int(frame_width * scale))
+    small_h = max(1, int(frame_height * scale))
+
     fgbg = cv2.createBackgroundSubtractorMOG2(
         history=s.mog2_history,
         varThreshold=s.mog2_var_threshold,
@@ -33,12 +38,11 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
 
     results: list[MotionFrame] = []
 
-    # Debug video setup — only if MD_DEBUG_VIDEO=true
-    debug_writer = None
-    debug_motion_boxes: dict[int, list[dict]] = {}  # frame_index → boxes
+    # Debug video setup — only if MD_DEBUG_VIDEO=true and dir is writable
+    debug_enabled = False
+    debug_motion_boxes: dict[int, list[dict]] = {}
     all_frames: list[np.ndarray] = []
 
-    debug_enabled = False
     if s.md_debug_video:
         try:
             os.makedirs(s.md_debug_output_dir, exist_ok=True)
@@ -66,7 +70,13 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                 frame_index += 1
                 continue
 
-            fgmask = fgbg.apply(frame)
+            # Resize for MOG2 — much faster on smaller frames
+            if scale < 1.0:
+                small = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                small = frame
+
+            fgmask = fgbg.apply(small)
             # Remove shadows (value 127) — keep only foreground (255)
             _, fgmask = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
 
@@ -74,19 +84,30 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
 
             boxes = []
             crops_b64 = []
+            inv = 1.0 / scale  # scale coords back to original resolution
+
             for cnt in contours:
                 if cv2.contourArea(cnt) < s.motion_min_contour_area:
                     continue
-                x, y, w, h = cv2.boundingRect(cnt)
-                # Clamp to frame bounds
+
+                sx, sy, sw, sh = cv2.boundingRect(cnt)
+
+                # Scale bbox back to original resolution
+                x = int(sx * inv)
+                y = int(sy * inv)
+                w = int(sw * inv)
+                h = int(sh * inv)
+
+                # Clamp to original frame bounds
                 fh, fw = frame.shape[:2]
                 x, y = max(0, x), max(0, y)
                 w, h = min(w, fw - x), min(h, fh - y)
                 if w < 4 or h < 4:
                     continue
+
                 boxes.append({"x": x, "y": y, "w": w, "h": h})
 
-                # Encode crop as JPEG and base64 — no MinIO upload needed
+                # Crop from original full-res frame — no quality loss
                 crop = frame[y:y + h, x:x + w]
                 ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ok:
