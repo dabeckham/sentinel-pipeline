@@ -193,5 +193,62 @@ docker compose up -d
 
 - **2026-06-05 Session 1:** Full architecture spec, all design decisions, GitHub repo setup, README, .env.example, .gitignore, all docs pushed to github.com/dabeckham/sentinel-pipeline.
 - **2026-06-05 Session 1 cont.:** Phase 1 complete — full infrastructure skeleton built and ready to deploy.
+- **2026-06-06 Session 2:** Deployment attempted. Multiple issues encountered and partially resolved (see Current Blocker below).
+
+---
+
+## ⚠️ Current Blocker — Handoff to Claude Code
+
+**The orchestrator container is crash-looping. `curl http://localhost:8000/api/health` fails.**
+
+### Root Cause
+The `orchestrator/app/models/` directory exists locally but was never committed to git due to two compounding bugs:
+1. `.gitignore` had a `models/` entry (intended for YOLO weight files) that silently blocked `orchestrator/app/models/` from being tracked
+2. Cowork sandbox cannot run git reliably on the Windows-mounted filesystem
+
+### What Has Been Fixed (not yet committed/pushed)
+- `.gitignore` updated: replaced `models/` with `/oc-worker/models/` and `/md-worker/models/`
+- `orchestrator/Dockerfile`: added `ENV PYTHONPATH=/app`
+- `orchestrator/alembic/env.py`: robust `os.path.abspath` sys.path fix
+
+### What Still Needs Doing
+The model files exist in `C:\Users\Don\Claude\Projects\Video analysis\orchestrator\app\models\` but are not in git. Claude Code needs to:
+
+1. **Fix git on Windows machine:**
+   ```
+   del "C:\Users\Don\Claude\Projects\Video analysis\.git\index.lock"
+   cd "C:\Users\Don\Claude\Projects\Video analysis"
+   git add .
+   git commit -m "Fix: add models directory, fix gitignore, PYTHONPATH"
+   git push
+   ```
+
+2. **On Docker host (192.168.55.10, user: dabeckham):**
+   ```bash
+   cd ~/sentinel-pipeline
+   git pull
+   docker compose build --no-cache orchestrator
+   docker compose up -d orchestrator
+   curl http://localhost:8000/api/health
+   ```
+
+3. **Verify full stack:**
+   - `curl http://localhost:8000/api/health` → `{"status":"ok",...}`
+   - RabbitMQ: http://192.168.55.10:15672 (credentials in .env)
+   - MinIO: http://192.168.55.10:9001 (credentials in .env)
+   - UI stub: http://192.168.55.10:3000
+
+### Docker Host Info
+- IP: 192.168.55.10, user: dabeckham
+- SSH key already set up from Docker host to GitHub (ed25519)
+- Repo cloned at: `~/sentinel-pipeline`
+- `.env` file already configured with real secrets (do not overwrite)
+- NAS mounted at: `/mnt/ds-one/sentinel-ingest` (NFS from 192.168.55.55)
+- Existing containers NOT part of this project: frigate, ollama, nginx-proxy (do not touch)
+- GPU 1 is target for OC workers (GPU 0 used by Frigate)
+
+### Model Files That Must Be in Git
+All in `orchestrator/app/models/`:
+`__init__.py`, `base.py`, `job.py`, `worker.py`, `motion_event.py`, `track.py`, `detection.py`, `user.py`, `config.py`
 
 ---

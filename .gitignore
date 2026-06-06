@@ -55,7 +55,8 @@ Thumbs.db
 *.pt
 *.onnx
 *.engine
-models/
+/oc-worker/models/
+/md-worker/models/
 
 # MinIO local data (if running locally for dev)
 minio-data/
