@@ -81,8 +81,8 @@ sentinel-pipeline/
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Infrastructure skeleton: Docker Compose, DB schema, RabbitMQ queues, MinIO buckets, Orchestrator stub | 🔲 **NEXT** |
-| 2 | Core pipeline: FTP watcher → MD worker → OC worker → DB writer | 🔲 Planned |
+| 1 | Infrastructure skeleton: Docker Compose, DB schema, RabbitMQ queues, MinIO buckets, Orchestrator stub | ✅ Complete |
+| 2 | Core pipeline: FTP watcher → MD worker → OC worker → DB writer | 🔲 **NEXT** |
 | 3 | Auth & REST API: JWT, roles, LAN trust, all endpoints, WebSocket | 🔲 Planned |
 | 4 | Browser UI: all pages (Ingest, Status, Review, Config, User Mgmt) | 🔲 Planned |
 | 5 | Hardening: DLQ retry, dedup, graceful shutdown, logging, tests | 🔲 Planned |
@@ -131,7 +131,7 @@ config (key, value, updated_by, updated_at)
 
 ## Current Status
 
-**Phase 1 infrastructure skeleton COMPLETE — ready to deploy.**
+**Phase 1 DEPLOYED AND VERIFIED. Starting Phase 2.**
 
 ### Docker Host Details (private — do not commit)
 - Hardware: i9-9900k, 2x RTX 3060 (12GB VRAM each)
@@ -168,20 +168,13 @@ config (key, value, updated_by, updated_at)
 | `ui/Dockerfile` | Nginx serving stub page (Phase 4: full React build) |
 | `ui/stub/index.html` | Placeholder page pointing to /api/health |
 
-### Next Step: Deploy Phase 1
-Run on Docker host (192.168.55.10):
-```bash
-git clone https://github.com/dabeckham/sentinel-pipeline.git
-cd sentinel-pipeline
-cp .env.example .env
-# Edit .env — set all passwords and INGEST_SOURCE_PATH
-docker compose up -d
-# Verify: curl http://localhost:8000/api/health
-# RabbitMQ mgmt: http://localhost:15672
-# MinIO console: http://localhost:9001
-```
+### Verified Services (2026-06-06)
+- `http://192.168.55.10:8000/api/health` ✅
+- `http://192.168.55.10:15672` RabbitMQ mgmt ✅
+- `http://192.168.55.10:9001` MinIO console ✅
+- `http://192.168.55.10:3000` UI stub ✅
 
-### Phase 2 Tasks (next coding session)
+### Phase 2 Tasks (IN PROGRESS)
 1. Orchestrator: FTP path watcher (watchdog) → publish to ingest queue
 2. MD Worker: MOG2 motion detection → frame crops → publish to motion_results
 3. OC Worker: YOLO26 inference + ByteTrack → publish to oc_results
@@ -193,52 +186,11 @@ docker compose up -d
 
 - **2026-06-05 Session 1:** Full architecture spec, all design decisions, GitHub repo setup, README, .env.example, .gitignore, all docs pushed to github.com/dabeckham/sentinel-pipeline.
 - **2026-06-05 Session 1 cont.:** Phase 1 complete — full infrastructure skeleton built and ready to deploy.
-- **2026-06-06 Session 2:** Deployment attempted. Multiple issues encountered and partially resolved (see Current Blocker below).
+- **2026-06-06 Session 2:** Deployment completed. Fixed .gitignore models/ scope bug, added PYTHONPATH to Dockerfile, committed orchestrator models. Full stack verified on 192.168.55.10. Starting Phase 2.
 
 ---
 
-## ⚠️ Current Blocker — Handoff to Claude Code
-
-**The orchestrator container is crash-looping. `curl http://localhost:8000/api/health` fails.**
-
-### Root Cause
-The `orchestrator/app/models/` directory exists locally but was never committed to git due to two compounding bugs:
-1. `.gitignore` had a `models/` entry (intended for YOLO weight files) that silently blocked `orchestrator/app/models/` from being tracked
-2. Cowork sandbox cannot run git reliably on the Windows-mounted filesystem
-
-### What Has Been Fixed (not yet committed/pushed)
-- `.gitignore` updated: replaced `models/` with `/oc-worker/models/` and `/md-worker/models/`
-- `orchestrator/Dockerfile`: added `ENV PYTHONPATH=/app`
-- `orchestrator/alembic/env.py`: robust `os.path.abspath` sys.path fix
-
-### What Still Needs Doing
-The model files exist in `C:\Users\Don\Claude\Projects\Video analysis\orchestrator\app\models\` but are not in git. Claude Code needs to:
-
-1. **Fix git on Windows machine:**
-   ```
-   del "C:\Users\Don\Claude\Projects\Video analysis\.git\index.lock"
-   cd "C:\Users\Don\Claude\Projects\Video analysis"
-   git add .
-   git commit -m "Fix: add models directory, fix gitignore, PYTHONPATH"
-   git push
-   ```
-
-2. **On Docker host (192.168.55.10, user: dabeckham):**
-   ```bash
-   cd ~/sentinel-pipeline
-   git pull
-   docker compose build --no-cache orchestrator
-   docker compose up -d orchestrator
-   curl http://localhost:8000/api/health
-   ```
-
-3. **Verify full stack:**
-   - `curl http://localhost:8000/api/health` → `{"status":"ok",...}`
-   - RabbitMQ: http://192.168.55.10:15672 (credentials in .env)
-   - MinIO: http://192.168.55.10:9001 (credentials in .env)
-   - UI stub: http://192.168.55.10:3000
-
-### Docker Host Info
+## Docker Host Info
 - IP: 192.168.55.10, user: dabeckham
 - SSH key already set up from Docker host to GitHub (ed25519)
 - Repo cloned at: `~/sentinel-pipeline`
@@ -246,9 +198,5 @@ The model files exist in `C:\Users\Don\Claude\Projects\Video analysis\orchestrat
 - NAS mounted at: `/mnt/ds-one/sentinel-ingest` (NFS from 192.168.55.55)
 - Existing containers NOT part of this project: frigate, ollama, nginx-proxy (do not touch)
 - GPU 1 is target for OC workers (GPU 0 used by Frigate)
-
-### Model Files That Must Be in Git
-All in `orchestrator/app/models/`:
-`__init__.py`, `base.py`, `job.py`, `worker.py`, `motion_event.py`, `track.py`, `detection.py`, `user.py`, `config.py`
 
 ---
