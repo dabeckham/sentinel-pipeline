@@ -12,7 +12,11 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    log.info("sentinel_orchestrator_starting", version="0.2.0")
+    log.info("sentinel_orchestrator_starting",
+             version="0.2.0",
+             rabbitmq_host=settings.rabbitmq_host,
+             rabbitmq_user=settings.rabbitmq_user,
+             ingest_path=settings.ingest_watch_path)
 
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
