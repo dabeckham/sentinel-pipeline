@@ -101,10 +101,13 @@ def scan_ingest_missed() -> int:
         log.warning("startup_scan_path_missing", path=str(ingest_path))
         return 0
 
+    ignore_dirs = {d.strip().lower() for d in settings.ingest_ignore_dirs.split(",") if d.strip()}
     glob = "**/*" if settings.ingest_recurse else "*"
     candidates = [
         p for p in ingest_path.glob(glob)
-        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS
+        if p.is_file()
+        and p.suffix.lower() in VIDEO_EXTENSIONS
+        and not any(part.lower() in ignore_dirs for part in p.parts)
     ]
 
     if not candidates:
