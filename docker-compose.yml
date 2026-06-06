@@ -1,0 +1,195 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ — Message Broker
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: sentinel-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    ports:
+      - "${PORT_RABBITMQ_AMQP:-5672}:5672"
+      - "${PORT_RABBITMQ_MGMT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinel-net
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Metadata Database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel}
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${PORT_POSTGRES:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinel-net
+
+  # ---------------------------------------------------------------------------
+  # MinIO — Object Storage (frames, crops, snapshots)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: sentinel-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${PORT_MINIO_API:-9000}:9000"
+      - "${PORT_MINIO_CONSOLE:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinel-net
+
+  # MinIO bucket initializer — runs once then exits
+  minio-init:
+    image: minio/mc:latest
+    container_name: sentinel-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh /init.sh
+    volumes:
+      - ./infra/minio/init.sh:/init.sh:ro
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_FRAMES: ${MINIO_BUCKET_FRAMES:-frames-raw}
+      MINIO_BUCKET_CROPS: ${MINIO_BUCKET_CROPS:-crops}
+      MINIO_BUCKET_SNAPSHOTS: ${MINIO_BUCKET_SNAPSHOTS:-snapshots}
+    networks:
+      - sentinel-net
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Orchestrator — FastAPI service
+  # ---------------------------------------------------------------------------
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: sentinel-orchestrator
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      POSTGRES_HOST: postgres
+      MINIO_ENDPOINT: minio:9000
+    volumes:
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
+    ports:
+      - "${PORT_ORCHESTRATOR:-8000}:8000"
+    networks:
+      - sentinel-net
+
+  # ---------------------------------------------------------------------------
+  # MD Worker — Motion Detection (CPU)
+  # ---------------------------------------------------------------------------
+  md-worker:
+    build:
+      context: ./md-worker
+      dockerfile: Dockerfile
+    container_name: sentinel-md-worker
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MINIO_ENDPOINT: minio:9000
+      WORKER_TYPE: md
+    networks:
+      - sentinel-net
+
+  # ---------------------------------------------------------------------------
+  # OC Worker — Object Classification (CPU mode)
+  # ---------------------------------------------------------------------------
+  oc-worker:
+    build:
+      context: ./oc-worker
+      dockerfile: Dockerfile
+    container_name: sentinel-oc-worker
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MINIO_ENDPOINT: minio:9000
+      WORKER_TYPE: oc
+      OC_USE_GPU: "false"
+    networks:
+      - sentinel-net
+
+  # ---------------------------------------------------------------------------
+  # UI — React frontend served by Nginx
+  # ---------------------------------------------------------------------------
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: sentinel-ui
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    ports:
+      - "${PORT_UI:-3000}:80"
+    networks:
+      - sentinel-net
+
+# -----------------------------------------------------------------------------
+networks:
+  sentinel-net:
+    driver: bridge
+
+volumes:
+  rabbitmq-data:
+  postgres-data:
+  minio-data:

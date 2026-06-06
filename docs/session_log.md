@@ -129,24 +129,69 @@ config (key, value, updated_by, updated_at)
 
 ---
 
-## Current Status — End of Session 1
+## Current Status
 
-**GitHub repo is live and all files pushed.**  
-SSH access to the Docker host has not yet been provided.  
-Ready to begin **Phase 1** as soon as SSH access is available.
+**Phase 1 infrastructure skeleton COMPLETE — ready to deploy.**
 
-### Phase 1 Tasks (to be coded next)
-1. `docker-compose.yml` — all services stubbed with correct networking
-2. `docker-compose.gpu.yml` — GPU worker override
-3. PostgreSQL schema + Alembic migration setup
-4. RabbitMQ `definitions.json` — pre-configure all queues + DLX
-5. MinIO bucket init script
-6. Orchestrator FastAPI stub (health endpoint, settings loading)
+### Docker Host Details (private — do not commit)
+- Hardware: i9-9900k, 2x RTX 3060 (12GB VRAM each)
+- GPU 0: ~5GB used by Frigate (embeddings, detector, 17x ffmpeg streams)
+- GPU 1: ~12GB free (Ollama unloads when idle — use this for OC workers)
+- CUDA 13.0, Driver 580.159.03, TensorRT available (Frigate stable-tensorrt image)
+- Existing containers: frigate, ollama, nginx-proxy
+- Docker 29.5.2, Docker Compose v5.1.4 (use `docker compose`, not `docker-compose`)
+
+### Phase 1 Files Created
+| File | Description |
+|---|---|
+| `docker-compose.yml` | Full stack: rabbitmq, postgres, minio, minio-init, orchestrator, md-worker, oc-worker, ui |
+| `docker-compose.gpu.yml` | GPU override — pins OC worker to GPU 1 (configurable via GPU_DEVICE_ID) |
+| `infra/rabbitmq/definitions.json` | Pre-configured queues: ingest, motion_results, oc_results + DLX exchanges |
+| `infra/rabbitmq/rabbitmq.conf` | Loads definitions, sets 1hr consumer timeout |
+| `infra/minio/init.sh` | Creates frames-raw, crops, snapshots buckets on startup |
+| `infra/postgres/init.sql` | Enables uuid-ossp and pg_trgm extensions |
+| `orchestrator/Dockerfile` | Python 3.12-slim, runs alembic migrate then uvicorn |
+| `orchestrator/requirements.txt` | FastAPI, SQLAlchemy, Alembic, pika, minio, JWT, bcrypt |
+| `orchestrator/app/main.py` | FastAPI app with CORS, lifespan, health router |
+| `orchestrator/app/config.py` | Pydantic settings — all config from env vars |
+| `orchestrator/app/api/health.py` | GET /api/health endpoint |
+| `orchestrator/app/models/` | SQLAlchemy models: Job, Worker, MotionEvent, Track, Detection, User, Config |
+| `orchestrator/alembic/` | Alembic env.py + migration 0001_initial_schema |
+| `md-worker/Dockerfile` | Python 3.12-slim + OpenCV |
+| `md-worker/requirements.txt` | opencv, pika, minio, structlog |
+| `md-worker/worker/main.py` | Phase 1 stub — logs readiness, loops |
+| `oc-worker/Dockerfile` | Python 3.12-slim (CPU) |
+| `oc-worker/Dockerfile.gpu` | nvidia/cuda:12.4.1 base (GPU/TensorRT) |
+| `oc-worker/requirements.txt` | ultralytics, pika, minio (CPU) |
+| `oc-worker/requirements.gpu.txt` | + torch cu124, tensorrt 10.4 |
+| `oc-worker/worker/main.py` | Phase 1 stub — logs readiness, loops |
+| `ui/Dockerfile` | Nginx serving stub page (Phase 4: full React build) |
+| `ui/stub/index.html` | Placeholder page pointing to /api/health |
+
+### Next Step: Deploy Phase 1
+Run on Docker host (192.168.55.10):
+```bash
+git clone https://github.com/dabeckham/sentinel-pipeline.git
+cd sentinel-pipeline
+cp .env.example .env
+# Edit .env — set all passwords and INGEST_SOURCE_PATH
+docker compose up -d
+# Verify: curl http://localhost:8000/api/health
+# RabbitMQ mgmt: http://localhost:15672
+# MinIO console: http://localhost:9001
+```
+
+### Phase 2 Tasks (next coding session)
+1. Orchestrator: FTP path watcher (watchdog) → publish to ingest queue
+2. MD Worker: MOG2 motion detection → frame crops → publish to motion_results
+3. OC Worker: YOLO26 inference + ByteTrack → publish to oc_results
+4. Orchestrator: oc_results consumer → write to DB + copy snapshot to MinIO
 
 ---
 
 ## Session History
 
 - **2026-06-05 Session 1:** Full architecture spec, all design decisions, GitHub repo setup, README, .env.example, .gitignore, all docs pushed to github.com/dabeckham/sentinel-pipeline.
+- **2026-06-05 Session 1 cont.:** Phase 1 complete — full infrastructure skeleton built and ready to deploy.
 
 ---
