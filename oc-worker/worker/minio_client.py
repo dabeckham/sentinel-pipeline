@@ -20,19 +20,6 @@ def get_client() -> Minio:
     return _client
 
 
-def download_crop(bucket: str, object_name: str) -> np.ndarray:
-    """Download a crop from MinIO and decode it as a BGR numpy array."""
-    client = get_client()
-    response = client.get_object(bucket, object_name)
-    data = response.read()
-    response.close()
-    arr = np.frombuffer(data, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise RuntimeError(f"Failed to decode image: {object_name}")
-    return img
-
-
 def upload_snapshot(bucket: str, object_name: str, image: np.ndarray) -> str:
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:

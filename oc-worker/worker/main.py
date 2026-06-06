@@ -1,14 +1,17 @@
 """OC Worker — Object Classification (YOLO + ByteTrack)"""
+import base64
 import json
 import signal
 import time
 import pika
 import structlog
 import setproctitle
+import cv2
+import numpy as np
 
 from worker.config import get_settings
 from worker.detector import classify_crop, track_frame, release_tracker, get_model
-from worker.minio_client import download_crop, upload_snapshot
+from worker.minio_client import upload_snapshot
 
 log = structlog.get_logger()
 
@@ -31,17 +34,29 @@ def _connect(settings) -> tuple[pika.BlockingConnection, any]:
     raise RuntimeError("Could not connect to RabbitMQ")
 
 
+def _decode_crop(b64: str) -> np.ndarray | None:
+    """Decode a base64 JPEG string to a BGR numpy array."""
+    try:
+        data = base64.b64decode(b64)
+        arr = np.frombuffer(data, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return img
+    except Exception:
+        log.exception("oc_crop_decode_error")
+        return None
+
+
 def process_frame(msg: dict, ch, method):
     settings = get_settings()
     job_id = msg["job_id"]
     frame_index = msg["frame_index"]
     timestamp_ms = msg["timestamp_ms"]
     bboxes = msg.get("bounding_boxes", [])
-    crop_paths = msg.get("crop_paths", [])
+    crops_b64 = msg.get("crops_b64", [])
     is_final = msg.get("is_final", False)
 
     try:
-        if not bboxes or not any(crop_paths):
+        if not bboxes or not crops_b64:
             # No motion in this frame — just propagate is_final
             if is_final:
                 ch.basic_publish(
@@ -54,20 +69,16 @@ def process_frame(msg: dict, ch, method):
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        # Download crops from MinIO
+        # Decode crops from message body — no MinIO download needed (issue #13)
         crops = []
         valid_bboxes = []
-        valid_paths = []
-        for bbox, crop_path in zip(bboxes, crop_paths):
-            if crop_path is None:
-                continue
-            try:
-                img = download_crop(settings.minio_bucket_crops, crop_path)
+        valid_b64 = []
+        for bbox, b64 in zip(bboxes, crops_b64):
+            img = _decode_crop(b64)
+            if img is not None:
                 crops.append(img)
                 valid_bboxes.append(bbox)
-                valid_paths.append(crop_path)
-            except Exception:
-                log.exception("oc_crop_download_error", crop_path=crop_path)
+                valid_b64.append(b64)
 
         if not crops:
             if is_final:
@@ -109,7 +120,6 @@ def process_frame(msg: dict, ch, method):
                     "class_label": det["class_label"],
                     "confidence": det["confidence"],
                     "bbox": det["bbox"],
-                    "crop_path": valid_paths[crop_idx],
                     "snapshot_path": snapshot_path,
                     "is_final": False,
                 }),

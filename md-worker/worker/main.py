@@ -8,7 +8,6 @@ import setproctitle
 
 from worker.config import get_settings
 from worker.motion import detect_motion
-from worker.minio_client import upload_crop
 
 log = structlog.get_logger()
 
@@ -40,17 +39,8 @@ def process_job(msg: dict, ch, method):
 
         for i, mf in enumerate(motion_frames):
             is_final = (i == len(motion_frames) - 1)
-            crop_paths = []
 
-            for box_idx, (bbox, crop) in enumerate(zip(mf.bounding_boxes, mf.crops)):
-                object_name = f"{job_id}/frame_{mf.frame_index:06d}_box_{box_idx:03d}.jpg"
-                try:
-                    upload_crop(settings.minio_bucket_crops, object_name, crop)
-                    crop_paths.append(object_name)
-                except Exception:
-                    log.exception("md_crop_upload_error", job_id=job_id, object_name=object_name)
-                    crop_paths.append(None)
-
+            # Crops travel in the message body (base64 JPEG) — no MinIO round-trip (issue #13)
             ch.basic_publish(
                 exchange="",
                 routing_key=settings.queue_motion_results,
@@ -59,7 +49,7 @@ def process_job(msg: dict, ch, method):
                     "frame_index": mf.frame_index,
                     "timestamp_ms": mf.timestamp_ms,
                     "bounding_boxes": mf.bounding_boxes,
-                    "crop_paths": crop_paths,
+                    "crops_b64": mf.crops_b64,
                     "is_final": is_final,
                 }),
                 properties=pika.BasicProperties(
@@ -78,7 +68,7 @@ def process_job(msg: dict, ch, method):
                     "frame_index": 0,
                     "timestamp_ms": 0,
                     "bounding_boxes": [],
-                    "crop_paths": [],
+                    "crops_b64": [],
                     "is_final": True,
                 }),
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
