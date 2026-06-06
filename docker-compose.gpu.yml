@@ -12,7 +12,7 @@ services:
       dockerfile: Dockerfile.gpu
     environment:
       OC_USE_GPU: "true"
-      CUDA_VISIBLE_DEVICES: "${GPU_DEVICE_ID:-1}"
+      CUDA_VISIBLE_DEVICES: "0"
       YOLO_MODEL: ${YOLO_MODEL:-yolo26s}
     deploy:
       resources:
