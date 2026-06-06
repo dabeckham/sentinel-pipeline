@@ -2,7 +2,7 @@ import hashlib
 import time
 import structlog
 from pathlib import Path
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver as Observer
 from watchdog.events import FileSystemEventHandler
 
 from app.config import get_settings
