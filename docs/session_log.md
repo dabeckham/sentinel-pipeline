@@ -82,7 +82,7 @@ sentinel-pipeline/
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Infrastructure skeleton: Docker Compose, DB schema, RabbitMQ queues, MinIO buckets, Orchestrator stub | ✅ Complete |
-| 2 | Core pipeline: FTP watcher → MD worker → OC worker → DB writer | 🔲 **NEXT** |
+| 2 | Core pipeline: FTP watcher → MD worker → OC worker → DB writer | 🔧 In Progress — deploying |
 | 3 | Auth & REST API: JWT, roles, LAN trust, all endpoints, WebSocket | 🔲 Planned |
 | 4 | Browser UI: all pages (Ingest, Status, Review, Config, User Mgmt) | 🔲 Planned |
 | 5 | Hardening: DLQ retry, dedup, graceful shutdown, logging, tests | 🔲 Planned |
@@ -174,11 +174,47 @@ config (key, value, updated_by, updated_at)
 - `http://192.168.55.10:9001` MinIO console ✅
 - `http://192.168.55.10:3000` UI stub ✅
 
-### Phase 2 Tasks (IN PROGRESS)
-1. Orchestrator: FTP path watcher (watchdog) → publish to ingest queue
-2. MD Worker: MOG2 motion detection → frame crops → publish to motion_results
-3. OC Worker: YOLO26 inference + ByteTrack → publish to oc_results
-4. Orchestrator: oc_results consumer → write to DB + copy snapshot to MinIO
+### Phase 2 Code — All Written (commit a68969d)
+All Phase 2 files committed and pushed. See Files Created table below.
+
+### Phase 2 Deployment — Active Debugging
+Three bugs encountered and fixed during deployment. Current build (a68969d) is deploying now.
+
+#### Bug 1: Watchdog inotify fails on NFS ✅ Fixed
+`/ingest` is NFS4-mounted. inotify doesn't work on NFS.
+Fix: switched `Observer` → `PollingObserver` in `orchestrator/app/services/watcher.py`.
+
+#### Bug 2: INGEST_SOURCE_PATH collision ✅ Fixed
+`.env` has `INGEST_SOURCE_PATH=/mnt/ds-one/sentinel-ingest` (host path).
+Pydantic-settings picked this up and passed it to watchdog inside the container, where the path doesn't exist.
+Fix: renamed field `ingest_source_path` → `ingest_watch_path` (maps to env var `INGEST_WATCH_PATH`, not in .env). Defaults to `/ingest`.
+Note: Compose v5.1.4 `env_file:` appears to take precedence over `environment:` block — hardcoded field rename is the reliable fix.
+
+#### Bug 3: RabbitMQ auth refused — IN PROGRESS
+Workers connecting with wrong password (pydantic-settings reads default `"sentinel"` instead of real password from env).
+Switched from `pika.URLParameters(url)` to `pika.ConnectionParameters` with `PlainCredentials` to eliminate URL-parsing as a factor.
+Startup logs now include `rabbitmq_user=` to confirm what pydantic resolves.
+Current build deploying — awaiting results.
+
+#### Bug 4: OC worker yolo26s.pt not found ✅ Fixed
+`.env` has `YOLO_MODEL=yolo26s` (future model). Worker tried to load it and crashed.
+Fix: renamed field `yolo_model` → `oc_model_name` (env var `OC_MODEL_NAME`, not in .env). Defaults to `yolo11s` (auto-downloads from ultralytics).
+
+### Phase 2 Files Created
+| File | Description |
+|---|---|
+| `orchestrator/app/db.py` | SQLAlchemy engine + SessionLocal |
+| `orchestrator/app/services/amqp.py` | Thread-safe RabbitMQ publisher, auto-reconnect |
+| `orchestrator/app/services/watcher.py` | PollingObserver watches /ingest, deduplicates by SHA-256, creates Job, publishes to ingest queue |
+| `orchestrator/app/services/result_consumer.py` | Consumes oc_results, upserts Track, inserts Detection, marks job completed |
+| `md-worker/worker/config.py` | Pydantic settings (MOG2 tuning, queues, MinIO) |
+| `md-worker/worker/motion.py` | MOG2 background subtraction, returns crops per motion frame |
+| `md-worker/worker/minio_client.py` | Upload crops as JPEG to MinIO |
+| `md-worker/worker/main.py` | Consumes ingest queue, runs MOG2, publishes motion_results with is_final |
+| `oc-worker/worker/config.py` | Pydantic settings (model=yolo11s, thresholds, GPU) |
+| `oc-worker/worker/detector.py` | YOLO inference on crops + supervision ByteTrack per-job in-memory |
+| `oc-worker/worker/minio_client.py` | Download crops + upload snapshots from/to MinIO |
+| `oc-worker/worker/main.py` | Consumes motion_results, classifies crops, tracks, publishes oc_results |
 
 ---
 
@@ -186,7 +222,41 @@ config (key, value, updated_by, updated_at)
 
 - **2026-06-05 Session 1:** Full architecture spec, all design decisions, GitHub repo setup, README, .env.example, .gitignore, all docs pushed to github.com/dabeckham/sentinel-pipeline.
 - **2026-06-05 Session 1 cont.:** Phase 1 complete — full infrastructure skeleton built and ready to deploy.
-- **2026-06-06 Session 2:** Deployment completed. Fixed .gitignore models/ scope bug, added PYTHONPATH to Dockerfile, committed orchestrator models. Full stack verified on 192.168.55.10. Starting Phase 2.
+- **2026-06-06 Session 2:** Deployment completed. Fixed .gitignore models/ scope bug, added PYTHONPATH to Dockerfile, committed orchestrator models. Full stack verified on 192.168.55.10.
+- **2026-06-06 Session 3:** Phase 2 all code written (orchestrator watcher+consumer, MD worker MOG2, OC worker YOLO11+ByteTrack). Debugging deployment: fixed inotify/NFS, INGEST_SOURCE_PATH collision, yolo26s model name. RabbitMQ auth still resolving — current build deploying (commit a68969d).
+
+---
+
+## ⚠️ If Resuming From Here (Phase 2 deployment in progress)
+
+SSH access: `ssh -i ~/.ssh/claude_cowork dabeckham@192.168.55.10`
+
+### Immediate next action
+Check if the latest build (commit a68969d) resolved the RabbitMQ auth issue:
+```bash
+ssh -i ~/.ssh/claude_cowork dabeckham@192.168.55.10 \
+  "cd ~/sentinel-pipeline && docker compose logs --no-log-prefix --since=5m orchestrator md-worker oc-worker 2>&1 | head -40"
+```
+
+**If orchestrator shows** `sentinel_orchestrator_starting ... rabbitmq_user=sentinel ... ingest_path=/ingest` and then `file_watcher_started path=/ingest` → ingest path fixed ✅
+
+**If md-worker shows** `md_worker_consuming` → RabbitMQ auth fixed ✅
+
+**If md-worker still shows** `ACCESS_REFUSED` with `rabbitmq_user=sentinel`:
+- The real password in `.env` doesn't match what RabbitMQ stored at initialization
+- Fix: reset the RabbitMQ sentinel user password to match .env:
+  ```bash
+  # On docker host:
+  docker exec sentinel-rabbitmq rabbitmqctl change_password sentinel "$(grep RABBITMQ_PASSWORD ~/sentinel-pipeline/.env | cut -d= -f2)"
+  docker compose restart md-worker oc-worker orchestrator
+  ```
+
+### Smoke test (once all services are up)
+Drop a `.mp4` file into `/mnt/ds-one/sentinel-ingest` and watch:
+```bash
+docker compose logs -f orchestrator md-worker oc-worker
+```
+Expected sequence: `ingest_job_queued` → `md_job_complete` → `oc_frame_processed` → `job_completed`
 
 ---
 
