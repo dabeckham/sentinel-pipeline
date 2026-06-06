@@ -23,13 +23,15 @@ class Settings(BaseSettings):
     motion_min_contour_area: int = 500
     motion_frame_skip: int = 2
 
-    @property
-    def rabbitmq_url(self) -> str:
-        from urllib.parse import quote
-        user = quote(self.rabbitmq_user, safe="")
-        password = quote(self.rabbitmq_password, safe="")
-        vhost = quote(self.rabbitmq_vhost, safe="")
-        return f"amqp://{user}:{password}@{self.rabbitmq_host}:{self.rabbitmq_port}/{vhost}"
+    def rabbitmq_params(self):
+        import pika
+        return pika.ConnectionParameters(
+            host=self.rabbitmq_host,
+            port=self.rabbitmq_port,
+            virtual_host=self.rabbitmq_vhost,
+            credentials=pika.PlainCredentials(self.rabbitmq_user, self.rabbitmq_password),
+            heartbeat=60,
+        )
 
     class Config:
         env_file = ".env"

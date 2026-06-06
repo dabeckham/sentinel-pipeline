@@ -18,18 +18,20 @@ class Settings(BaseSettings):
     minio_bucket_crops: str = "crops"
     minio_bucket_snapshots: str = "snapshots"
 
-    yolo_model: str = "yolo11s.pt"
+    yolo_model: str = "yolo11s"
     oc_confidence_threshold: float = 0.45
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
-    @property
-    def rabbitmq_url(self) -> str:
-        from urllib.parse import quote
-        user = quote(self.rabbitmq_user, safe="")
-        password = quote(self.rabbitmq_password, safe="")
-        vhost = quote(self.rabbitmq_vhost, safe="")
-        return f"amqp://{user}:{password}@{self.rabbitmq_host}:{self.rabbitmq_port}/{vhost}"
+    def rabbitmq_params(self):
+        import pika
+        return pika.ConnectionParameters(
+            host=self.rabbitmq_host,
+            port=self.rabbitmq_port,
+            virtual_host=self.rabbitmq_vhost,
+            credentials=pika.PlainCredentials(self.rabbitmq_user, self.rabbitmq_password),
+            heartbeat=60,
+        )
 
     @property
     def yolo_model_path(self) -> str:

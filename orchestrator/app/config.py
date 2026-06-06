@@ -49,6 +49,16 @@ class Settings(BaseSettings):
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
+    def rabbitmq_params(self) -> "pika.ConnectionParameters":
+        import pika
+        return pika.ConnectionParameters(
+            host=self.rabbitmq_host,
+            port=self.rabbitmq_port,
+            virtual_host=self.rabbitmq_vhost,
+            credentials=pika.PlainCredentials(self.rabbitmq_user, self.rabbitmq_password),
+            heartbeat=60,
+        )
+
     @property
     def rabbitmq_url(self) -> str:
         from urllib.parse import quote

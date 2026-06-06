@@ -94,9 +94,7 @@ def _handle_message(body: bytes):
 
 
 def _connect(settings) -> tuple[pika.BlockingConnection, any]:
-    params = pika.URLParameters(settings.rabbitmq_url)
-    params.heartbeat = 60
-    conn = pika.BlockingConnection(params)
+    conn = pika.BlockingConnection(settings.rabbitmq_params())
     ch = conn.channel()
     ch.basic_qos(prefetch_count=10)
     return conn, ch

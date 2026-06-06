@@ -116,6 +116,7 @@ services:
       RABBITMQ_HOST: rabbitmq
       POSTGRES_HOST: postgres
       MINIO_ENDPOINT: minio:9000
+      INGEST_SOURCE_PATH: /ingest
     volumes:
       - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     ports:
@@ -142,6 +143,7 @@ services:
       RABBITMQ_HOST: rabbitmq
       MINIO_ENDPOINT: minio:9000
       WORKER_TYPE: md
+      INGEST_SOURCE_PATH: /ingest
     volumes:
       - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     networks:
