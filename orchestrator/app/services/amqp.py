@@ -18,9 +18,7 @@ class Publisher:
 
     def _connect(self):
         settings = get_settings()
-        params = pika.URLParameters(settings.rabbitmq_url)
-        params.heartbeat = 60
-        self._conn = pika.BlockingConnection(params)
+        self._conn = pika.BlockingConnection(settings.rabbitmq_params())
         self._channel = self._conn.channel()
 
     def publish(self, queue: str, message: dict, retries: int = 3):

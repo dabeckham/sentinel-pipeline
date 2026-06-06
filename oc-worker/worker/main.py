@@ -17,9 +17,7 @@ _snapshot_uploaded: dict[tuple[int, int], bool] = {}
 def _connect(settings) -> tuple[pika.BlockingConnection, any]:
     for attempt in range(20):
         try:
-            params = pika.URLParameters(settings.rabbitmq_url)
-            params.heartbeat = 60
-            conn = pika.BlockingConnection(params)
+            conn = pika.BlockingConnection(settings.rabbitmq_params())
             ch = conn.channel()
             ch.basic_qos(prefetch_count=1)
             log.info("oc_worker_amqp_connected")
