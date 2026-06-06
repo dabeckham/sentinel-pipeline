@@ -1,46 +1,67 @@
 # Sentinel Pipeline — Deployment Guide
-*Keep this document updated as the system evolves.*
+*v0.5.0 — All 5 phases complete — Last updated: 2026-06-06*
 
 ---
 
 ## Infrastructure
 
-| Component | Host | Notes |
+| Component | Host | Details |
 |---|---|---|
-| Docker host | 192.168.55.10 | i9-9900k, 2x RTX 3060 12GB |
-| NAS (ingest source) | 192.168.55.55 | Synology, NFS share |
-| GitHub repo | github.com/dabeckham/sentinel-pipeline | |
+| Docker host | 192.168.55.10 (dabeckham) | i9-9900k, 2× RTX 3060 12GB |
+| NAS (ingest source) | 192.168.55.55 | Synology DS, NFS share, read-only |
+| GitHub repo | github.com/dabeckham/sentinel-pipeline | main branch |
+| Project dir on host | `~/sentinel-pipeline` | |
 
 ### GPU Layout
-| GPU | Index | Current Use | Sentinel Use |
+| GPU | Physical Index | Default Use | Sentinel Use |
 |---|---|---|---|
-| RTX 3060 | 0 | Frigate (embeddings + detector + 17x ffmpeg) ~5GB | Available if GPU 1 full |
-| RTX 3060 | 1 | Ollama (unloads when idle) ~0-11GB | OC workers (default) |
+| RTX 3060 | 0 | Frigate (embeddings, detector, ffmpeg) ~5 GB | Do not target |
+| RTX 3060 | 1 | Ollama (unloads when idle) | OC workers (default) |
+
+> **Rule:** Never set `GPU_DEVICE_ID=0` unless you have confirmed Frigate is stopped.
+> Inside the container, Docker always remaps the assigned GPU to device `0`. Set `CUDA_VISIBLE_DEVICES=0` (not `1`) in the container environment.
 
 ### NAS Mount
 ```
-NAS path:    192.168.55.55:/volume1/FTP/sentinel-ingest
-Mount point: /mnt/ds-one/sentinel-ingest
-Mount type:  NFS read-only
-fstab entry: 192.168.55.55:/volume1/FTP/sentinel-ingest /mnt/ds-one/sentinel-ingest nfs ro,defaults,_netdev,nofail 0 0
+NAS export:  192.168.55.55:/volume1/FTP/sentinel-ingest
+Mount point: /mnt/ds-one/sentinel-ingest     (host)
+Container:   /ingest                          (bind mount, read-only)
+Type:        NFS4, read-only
+fstab:       192.168.55.55:/volume1/FTP/sentinel-ingest /mnt/ds-one/sentinel-ingest nfs ro,defaults,_netdev,nofail 0 0
 ```
+
+> **inotify does not work on NFS.** The orchestrator uses `PollingObserver` (not inotify). Do not switch to the default `Observer`.
+
+---
+
+## Service URLs
+
+| Service | URL | Auth |
+|---|---|---|
+| Browser UI | http://192.168.55.10:3000 | app login |
+| Orchestrator API | http://192.168.55.10:8000 | JWT bearer token |
+| API Docs (Swagger) | http://192.168.55.10:8000/docs | — |
+| RabbitMQ Management | http://192.168.55.10:15672 | RABBITMQ_USER / RABBITMQ_PASSWORD |
+| MinIO Console | http://192.168.55.10:9001 | MINIO_ACCESS_KEY / MINIO_SECRET_KEY |
+| PostgreSQL | 192.168.55.10:5432 | POSTGRES_USER / POSTGRES_PASSWORD |
 
 ---
 
 ## Prerequisites
 
-- Docker 29.5.2+
-- Docker Compose v5+
-- NFS client: `sudo apt-get install -y nfs-common`
-- NVIDIA Container Toolkit (for GPU workers)
-- NAS share mounted (see above)
-
-### Install NVIDIA Container Toolkit (if not already installed)
 ```bash
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+# Docker 29.5+, Compose v5+
+docker --version && docker compose version
+
+# NFS client
+sudo apt-get install -y nfs-common
+
+# NVIDIA Container Toolkit (for GPU workers)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
@@ -50,173 +71,252 @@ sudo systemctl restart docker
 
 ## First-Time Deployment
 
-### 1. Clone the repository
+### 1. Clone repository
 ```bash
 cd ~
 git clone https://github.com/dabeckham/sentinel-pipeline.git
 cd sentinel-pipeline
 ```
 
-### 2. Create and configure .env
+### 2. Mount the NAS
+```bash
+sudo mkdir -p /mnt/ds-one/sentinel-ingest
+# Add to /etc/fstab:
+echo "192.168.55.55:/volume1/FTP/sentinel-ingest /mnt/ds-one/sentinel-ingest nfs ro,defaults,_netdev,nofail 0 0" \
+  | sudo tee -a /etc/fstab
+sudo mount -a
+df -h | grep sentinel   # confirm mounted
+```
+
+### 3. Create .env
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-**Required values to set:**
-```bash
-# Generate secrets:
-openssl rand -hex 32    # → JWT_SECRET_KEY
-openssl rand -hex 16    # → RABBITMQ_PASSWORD
-openssl rand -hex 16    # → POSTGRES_PASSWORD
-openssl rand -hex 16    # → MINIO_SECRET_KEY / MINIO_ACCESS_KEY
+Set these values (generate secrets with `openssl rand -hex 32`):
 
-INGEST_SOURCE_PATH=/mnt/ds-one/sentinel-ingest
+```ini
+# Secrets — generate fresh for every deployment
+JWT_SECRET_KEY=<32-byte hex>
+RABBITMQ_PASSWORD=<16-byte hex>
+POSTGRES_PASSWORD=<16-byte hex>
+MINIO_SECRET_KEY=<16-byte hex>
+MINIO_ACCESS_KEY=sentinel           # username, not a secret
+
+# Paths
+INGEST_SOURCE_PATH=/mnt/ds-one/sentinel-ingest   # host-side, not used by containers
+INGEST_WATCH_PATH=/ingest                         # container-side
+
+# GPU (see GPU Layout above)
+GPU_DEVICE_ID=1
+
+# Optional: override default admin password on first boot
+# ADMIN_DEFAULT_PASSWORD=changeme   # change this immediately after first login
 ```
 
-> ⚠️ Never commit `.env` to git. It is in `.gitignore`.  
-> Store a secure copy of `.env` separately (see Disaster Recovery).
+> ⚠️ `.env` is in `.gitignore`. **Never commit it.** Keep a secure copy off the host (see DR doc).
 
-### 3. Start the stack (CPU mode)
+### 4. Bootstrap RabbitMQ users
+On the very first deployment, RabbitMQ creates the `guest` user only. The Sentinel user must be created manually once:
+
 ```bash
-docker compose up -d
-docker compose logs -f   # watch for errors; Ctrl-C when settled
+docker compose up -d rabbitmq
+sleep 15
+
+RMQPASS=$(grep RABBITMQ_PASSWORD ~/sentinel-pipeline/.env | cut -d= -f2)
+docker exec sentinel-rabbitmq rabbitmqctl add_user sentinel "$RMQPASS"
+docker exec sentinel-rabbitmq rabbitmqctl set_user_tags sentinel administrator
+docker exec sentinel-rabbitmq rabbitmqctl set_permissions -p / sentinel ".*" ".*" ".*"
 ```
 
-### 4. Start the stack (GPU mode — OC workers on GPU 1)
+### 5. Start all services
+
+**GPU mode (recommended — OC workers on GPU 1):**
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-To use GPU 0 instead (e.g. if Ollama has GPU 1 loaded):
+**CPU-only mode:**
 ```bash
-GPU_DEVICE_ID=0 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose up -d
 ```
 
-### 5. Verify
-```bash
-# API health
-curl http://localhost:8000/api/health
+> ⚠️ **Always use both compose files together for GPU mode.** Running `docker-compose.gpu.yml` alone causes the oc-worker to join the wrong Docker network (DNS for `rabbitmq` fails) and to miss env vars (RabbitMQ auth fails).
 
-# All containers running
+### 6. Verify deployment
+```bash
+# All containers healthy
 docker compose ps
 
-# RabbitMQ management UI
-# http://192.168.55.10:15672  (login: RABBITMQ_USER / RABBITMQ_PASSWORD from .env)
+# API health (should show version 0.5.0)
+curl http://localhost:8000/api/health
 
-# MinIO console
-# http://192.168.55.10:9001  (login: MINIO_ACCESS_KEY / MINIO_SECRET_KEY from .env)
+# Get a JWT token and check stats
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"changeme"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+curl -s http://localhost:8000/api/stats -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 
-# UI
-# http://192.168.55.10:3000
+# Browser UI
+open http://192.168.55.10:3000
+```
+
+### 7. Change default admin password
+Log in to the UI at http://192.168.55.10:3000 (admin / changeme) and change the password immediately, or via API:
+```bash
+# Get token first (see step 6), then:
+curl -s -X PATCH http://localhost:8000/api/users/1 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"password":"YourNewSecurePassword"}'
 ```
 
 ---
 
 ## Updating the Stack
 
+### Normal update (code changes only)
 ```bash
 cd ~/sentinel-pipeline
 git pull
-docker compose build          # rebuild changed images
-docker compose up -d          # recreate changed containers only
+docker compose build
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-Or for a full clean rebuild:
+### Full clean rebuild (when system deps or requirements.txt changed)
 ```bash
-docker compose down
+git pull
 docker compose build --no-cache
-docker compose up -d
+docker compose -f docker-compose.gpu.yml build --no-cache oc-worker
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+> **Note on `--no-cache` for oc-worker:** The GPU Dockerfile uses `ubuntu22.04` + `python3.10`. The `deadsnakes` PPA is not used (unreachable from the build host). `--no-cache` is safe and will install python3.10 from default ubuntu repos. `torch+cu124` and `supervision` install from PyPI without issues.
+
+### Restarting a single service
+```bash
+docker compose restart orchestrator
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
+```
+
+---
+
+## Startup Recovery (automatic)
+
+On every orchestrator startup, two recovery routines run automatically before the file watcher starts:
+
+1. **`recover_stuck_jobs()`** — finds jobs in `queued`, `md_processing`, or `oc_processing` state from the previous run, resets them to `queued`, and re-publishes to the ingest queue. Handles power-loss and worker crashes transparently.
+
+2. **`scan_ingest_missed()`** — walks `/ingest`, SHA-256 hashes each video file, and creates a job for any file with no DB record. Handles files that arrived while the orchestrator was down. Safe to run repeatedly — the hash check prevents double-ingestion.
+
+You will see these log lines on startup:
+```
+startup_recovery_no_stuck_jobs            (nothing stuck)
+startup_recovery_requeueing job_id=X      (recovering a stuck job)
+startup_scan_found_files count=12         (pre-existing files found)
+startup_scan_new_file path=/ingest/...    (each new file submitted)
+startup_scan_complete new_jobs=12
 ```
 
 ---
 
 ## Scaling Workers
 
-### Add more MD workers
+### More MD workers
 ```bash
 docker compose up -d --scale md-worker=3
 ```
 
-### Add more OC workers (CPU)
+### More OC workers (CPU)
 ```bash
 docker compose up -d --scale oc-worker=4
 ```
 
-### Add GPU OC workers
+### More OC workers (GPU) — add a second GPU compose override first
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --scale oc-worker=2
 ```
 
 ---
 
-## Service URLs
+## Monitoring
 
-| Service | URL | Credentials |
-|---|---|---|
-| Orchestrator API | http://192.168.55.10:8000 | JWT (Phase 3) |
-| API Docs (Swagger) | http://192.168.55.10:8000/docs | — |
-| RabbitMQ Management | http://192.168.55.10:15672 | RABBITMQ_USER/PASSWORD |
-| MinIO Console | http://192.168.55.10:9001 | MINIO_ACCESS_KEY/SECRET_KEY |
-| UI | http://192.168.55.10:3000 | app login (Phase 3) |
-| PostgreSQL | 192.168.55.10:5432 | POSTGRES_USER/PASSWORD |
+### Queue depths (RabbitMQ management UI)
+http://192.168.55.10:15672 → Queues tab
+
+Watch:
+- `ingest` — files waiting for MD worker
+- `motion_results` — frames waiting for OC worker
+- `oc_results` — results waiting to be written to DB
+- `dlx.*` — dead-letter queues; these should normally be empty
+
+### Requeue dead-lettered messages (admin only)
+```bash
+# Check counts
+curl -s http://localhost:8000/api/dlx/counts \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+# Requeue up to 100 messages from dlx.ingest
+curl -s -X POST "http://localhost:8000/api/dlx/requeue?queue=dlx.ingest&limit=100" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Logs
+```bash
+docker compose logs -f orchestrator
+docker compose logs -f md-worker
+docker compose logs -f oc-worker
+docker compose logs --tail=100 orchestrator
+```
+
+### GPU utilization
+```bash
+nvidia-smi dmon -s u    # live utilization
+nvidia-smi             # snapshot
+```
+
+---
+
+## Database Migrations
+
+Migrations run automatically on orchestrator startup via Alembic. To run manually:
+```bash
+docker compose exec orchestrator alembic upgrade head
+docker compose exec orchestrator alembic current
+docker compose exec orchestrator alembic history
+```
 
 ---
 
 ## Stopping the Stack
 
 ```bash
-# Stop but keep data volumes
+# Stop, keep volumes
 docker compose down
 
-# Stop and DELETE all data (destructive!)
+# Stop GPU worker separately first if needed
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml down
+
+# ⚠️ DESTRUCTIVE — stop and delete ALL data volumes
 docker compose down -v
-```
-
----
-
-## Logs
-
-```bash
-# All services
-docker compose logs -f
-
-# Single service
-docker compose logs -f orchestrator
-docker compose logs -f md-worker
-docker compose logs -f oc-worker
-
-# Last 100 lines
-docker compose logs --tail=100 orchestrator
-```
-
----
-
-## Running Database Migrations Manually
-
-Migrations run automatically on orchestrator startup. To run manually:
-```bash
-docker compose exec orchestrator alembic upgrade head
-docker compose exec orchestrator alembic current   # show current revision
-docker compose exec orchestrator alembic history   # show migration history
 ```
 
 ---
 
 ## Coexistence with Frigate and Ollama
 
-Sentinel containers are on the `sentinel-net` bridge network and do not interfere with Frigate or Ollama. Port conflicts to watch:
+Sentinel uses the `sentinel-net` bridge network. It does not share networks with Frigate or Ollama. Port conflicts to watch:
 
-| Port | Used by |
+| Port | Sentinel Service |
 |---|---|
-| 5432 | Sentinel PostgreSQL — confirm Frigate isn't using host port 5432 |
-| 9000/9001 | Sentinel MinIO |
-| 5672/15672 | Sentinel RabbitMQ |
-| 8000 | Sentinel Orchestrator API |
-| 3000 | Sentinel UI |
+| 3000 | UI (nginx) |
+| 8000 | Orchestrator API |
+| 5432 | PostgreSQL |
+| 5672 / 15672 | RabbitMQ AMQP / Management |
+| 9000 / 9001 | MinIO API / Console |
 
-If any conflict exists, change the `PORT_*` values in `.env`.
+If any conflict exists, remap the host port in `.env` (e.g. `POSTGRES_PORT=5433`).
 
----
-
-*Last updated: 2026-06-05 — Phase 1*
+**Do not touch:** `frigate`, `ollama`, `nginx-proxy` containers.
