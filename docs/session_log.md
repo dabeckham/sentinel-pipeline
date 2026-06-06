@@ -229,7 +229,7 @@ Fix: renamed field `yolo_model` → `oc_model_name` (env var `OC_MODEL_NAME`, no
 - **2026-06-06 Session 2:** Deployment completed. Fixed .gitignore models/ scope bug, added PYTHONPATH to Dockerfile, committed orchestrator models. Full stack verified on 192.168.55.10.
 - **2026-06-06 Session 3:** Phase 2 all code written (orchestrator watcher+consumer, MD worker MOG2, OC worker YOLO11+ByteTrack). Fixed: inotify/NFS, INGEST_SOURCE_PATH collision, yolo26s model name, RabbitMQ no-users (manual rabbitmqctl). Pipeline fully deployed and verified end-to-end.
 - **2026-06-06 Session 4:** Phase 2 verified live on real driveway footage. All 5 services healthy. Jobs completing. Detections written to PostgreSQL (car/truck/bus, confidence 0.85-0.93). Snapshots in MinIO. Fixed ByteTrack IndexError (commit 0565647) — rebuild in progress. Backlog ~500 queued jobs draining.
-- **2026-06-06 Session 5:** Unintended power outage hit all systems mid-session. Pipeline auto-recovered via Docker restart policy. 41 of 529 jobs had completed before outage (170 tracks, 2358 detections). RabbitMQ durable queues and PostgreSQL survived intact. Two jobs left stuck in `oc_processing` (mid-flight at power loss). ByteTrack fix rebuild interrupted — needs re-run. Discord webhook integration set up for status notifications. Graceful crash/power-loss recovery added to Phase 5 scope (see below).
+- **2026-06-06 Session 5:** Unintended power outage hit all systems mid-session. GPU acceleration enabled (RTX 3060 GPU 1, CUDA). Fixed CUDA_VISIBLE_DEVICES bug (#8), supervision missing from GPU requirements (#7). 12-video smoke test completed: 95 tracks, 1310 detections. Phase 2 fully verified. GitHub issue tracking established (issues #1-12). Discord help channel set up — Claude must ping when blocked. Memory files created for project continuity. Pipeline auto-recovered via Docker restart policy. 41 of 529 jobs had completed before outage (170 tracks, 2358 detections). RabbitMQ durable queues and PostgreSQL survived intact. Two jobs left stuck in `oc_processing` (mid-flight at power loss). ByteTrack fix rebuild interrupted — needs re-run. Discord webhook integration set up for status notifications. Graceful crash/power-loss recovery added to Phase 5 scope (see below).
 
 ---
 
@@ -250,10 +250,7 @@ All services healthy. Pipeline is live and processing real driveway camera foota
 
 **Backlog:** ~500 queued jobs still draining (ingest directory had many test files).
 
-**Known issue (in progress):** oc-worker has a ByteTrack IndexError on some frames (commit 0565647 fixes it). Rebuild running — when done, force-recreate oc-worker:
-```bash
-cd ~/sentinel-pipeline && docker compose up -d --force-recreate oc-worker
-```
+**GPU acceleration:** Deploy with `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d` — targets GPU 1 (RTX 3060, 12GB). CUDA_VISIBLE_DEVICES=0 inside container (Docker remaps physical GPU 1 → container GPU 0).
 
 **Verified data in PostgreSQL:**
 - Cars (confidence 0.93), Trucks (0.88), Buses (0.52) detected in real footage
