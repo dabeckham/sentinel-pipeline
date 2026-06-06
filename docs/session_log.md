@@ -260,7 +260,29 @@ cd ~/sentinel-pipeline && docker compose up -d --force-recreate oc-worker
 - Tracks and Detections tables populated
 - Snapshot paths in MinIO snapshots bucket
 
-### Next Phase (Phase 3)
+### NEXT SESSION — START HERE: GPU 1 Acceleration
+
+**Priority #1 before anything else.**
+
+CPU mode demonstrated a 962-frame job taking ~24 minutes. GPU 1 (RTX 3060 12GB, idle) will do the same job in ~30 seconds.
+
+#### What already exists (Phase 1):
+- `docker-compose.gpu.yml` — Compose override, sets `NVIDIA_VISIBLE_DEVICES=1`, uses gpu Dockerfile
+- `oc-worker/Dockerfile.gpu` — `nvidia/cuda:12.4.1-runtime` base
+- `oc-worker/requirements.gpu.txt` — torch cu124 + tensorrt 10.4
+
+#### What needs to happen:
+1. Build the GPU image: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml build --no-cache oc-worker`
+2. Redeploy with GPU override: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --force-recreate oc-worker`
+3. Verify CUDA visible: `docker exec sentinel-oc-worker python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"`
+4. Confirm GPU 1 only (not GPU 0 — that's Frigate): check `NVIDIA_VISIBLE_DEVICES=1` in container env
+5. Run a test job and compare timing vs CPU baseline (~24 min → target <1 min)
+
+#### Key risk:
+- `nvidia-container-toolkit` must be installed on host — verify with `nvidia-smi` inside a test container before building
+- If toolkit missing: `sudo apt install nvidia-container-toolkit && sudo systemctl restart docker`
+
+### Phase 3 (after GPU)
 Auth & REST API: JWT, roles (admin/operator/viewer), LAN trust mode, all endpoints, WebSocket for real-time job status.
 
 ---
