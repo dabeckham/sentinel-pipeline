@@ -1,3 +1,4 @@
+import threading
 import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -10,13 +11,22 @@ log = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
     settings = get_settings()
-    log.info("sentinel_orchestrator_starting", version="0.1.0")
-    # TODO Phase 2: start file watcher
-    # TODO Phase 2: start OC result consumer
+    log.info("sentinel_orchestrator_starting", version="0.2.0")
+
+    from app.services.watcher import start_watcher
+    from app.services.result_consumer import start_result_consumer
+
+    observer = start_watcher()
+
+    consumer_thread = threading.Thread(target=start_result_consumer, daemon=True, name="oc-result-consumer")
+    consumer_thread.start()
+
     yield
+
     log.info("sentinel_orchestrator_stopping")
+    observer.stop()
+    observer.join(timeout=5)
 
 
 def create_app() -> FastAPI:

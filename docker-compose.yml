@@ -142,6 +142,8 @@ services:
       RABBITMQ_HOST: rabbitmq
       MINIO_ENDPOINT: minio:9000
       WORKER_TYPE: md
+    volumes:
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     networks:
       - sentinel-net
 
