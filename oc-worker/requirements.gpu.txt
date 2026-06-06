@@ -10,4 +10,5 @@ structlog==24.4.0
 python-dotenv==1.0.1
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
-tensorrt==10.4.0
+# tensorrt optional — only needed for TensorRT .engine export
+# tensorrt==10.4.0

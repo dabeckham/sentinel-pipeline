@@ -1,6 +1,7 @@
-# GPU variant — uses CUDA 12.6 + Ubuntu 24.04 (ships python3.12 natively)
+# GPU variant — CUDA 12.4 + Ubuntu 22.04 (matches torch+cu124 wheel)
+# Python 3.10 from default apt (native on ubuntu22.04)
 # Targets GPU 1 by default (see docker-compose.gpu.yml)
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 WORKDIR /app
 
@@ -17,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
 COPY requirements.gpu.txt .
-RUN pip install --no-cache-dir --break-system-packages -r requirements.gpu.txt
+RUN pip install --no-cache-dir -r requirements.gpu.txt
 
 COPY . .
 
