@@ -4,7 +4,10 @@ from alembic import context
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# Ensure /app is on sys.path so 'app' package is importable
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 from app.config import get_settings
 from app.models import Base
