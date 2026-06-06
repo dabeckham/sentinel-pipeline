@@ -87,9 +87,9 @@ def start_watcher() -> Observer:
     observer = Observer()
     observer.schedule(
         IngestHandler(),
-        settings.ingest_source_path,
+        settings.ingest_watch_path,
         recursive=settings.ingest_recurse,
     )
     observer.start()
-    log.info("file_watcher_started", path=settings.ingest_source_path)
+    log.info("file_watcher_started", path=settings.ingest_watch_path)
     return observer

@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     minio_bucket_crops: str = "crops"
     minio_bucket_snapshots: str = "snapshots"
 
-    yolo_model: str = "yolo11s"
+    # OC_MODEL_NAME avoids collision with YOLO_MODEL in .env (which may name a future model)
+    oc_model_name: str = "yolo11s"
     oc_confidence_threshold: float = 0.45
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
 
     @property
     def yolo_model_path(self) -> str:
-        m = self.yolo_model
+        m = self.oc_model_name
         if not m.endswith(".pt"):
             m += ".pt"
         return m

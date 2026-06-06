@@ -94,6 +94,7 @@ def main():
     settings = get_settings()
     log.info("md_worker_starting",
              rabbitmq_host=settings.rabbitmq_host,
+             rabbitmq_user=settings.rabbitmq_user,
              queue=settings.queue_ingest)
 
     conn, ch = _connect(settings)

@@ -3,8 +3,9 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Ingest
-    ingest_source_path: str = "/ingest"
+    # Ingest — container always mounts the ingest path at /ingest.
+    # INGEST_SOURCE_PATH in .env is only for docker-compose volume syntax; not read here.
+    ingest_watch_path: str = "/ingest"
     ingest_recurse: bool = True
     ingest_poll_interval: int = 10
 
