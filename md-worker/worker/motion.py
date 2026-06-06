@@ -39,7 +39,7 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
 
     results: list[MotionFrame] = []
 
-    # Debug video — open writer upfront, write each frame as we go (no buffering)
+    # Debug video — written at scaled resolution (small_w x small_h) to keep encoding fast
     debug_writer = None
     if s.md_debug_video:
         try:
@@ -47,7 +47,7 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
             basename = os.path.splitext(os.path.basename(video_path))[0]
             out_path = os.path.join(s.md_debug_output_dir, f"{basename}_debug.mp4")
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            debug_writer = cv2.VideoWriter(out_path, fourcc, fps, (frame_width, frame_height))
+            debug_writer = cv2.VideoWriter(out_path, fourcc, fps, (small_w, small_h))
         except OSError as e:
             import structlog
             structlog.get_logger().warning(
@@ -117,18 +117,25 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                     ))
                     motion_boxes_this_frame = boxes
 
-            # Write debug frame immediately — no buffering
+            # Write debug frame at scaled resolution — fast encode, low NFS I/O
             if debug_writer is not None:
+                # Ensure we have the small frame even for skipped frames
+                dbg_frame = small if not skip else cv2.resize(
+                    frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
                 if motion_boxes_this_frame:
-                    annotated = frame.copy()
+                    annotated = dbg_frame.copy()
                     for box in motion_boxes_this_frame:
-                        x, y, w, h = box["x"], box["y"], box["w"], box["h"]
-                        cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                        cv2.putText(annotated, f"f{frame_index}", (x, max(y - 4, 10)),
+                        # Scale original-res box back down to debug frame coords
+                        sx = int(box["x"] * scale)
+                        sy = int(box["y"] * scale)
+                        sw = int(box["w"] * scale)
+                        sh = int(box["h"] * scale)
+                        cv2.rectangle(annotated, (sx, sy), (sx + sw, sy + sh), (0, 255, 0), 2)
+                        cv2.putText(annotated, f"f{frame_index}", (sx, max(sy - 4, 10)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     debug_writer.write(annotated)
                 else:
-                    debug_writer.write(frame)
+                    debug_writer.write(dbg_frame)
 
             frame_index += 1
 
