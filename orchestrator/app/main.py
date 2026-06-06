@@ -41,13 +41,18 @@ def _seed_admin():
 async def lifespan(app: FastAPI):
     settings = get_settings()
     log.info("sentinel_orchestrator_starting",
-             version="0.3.0",
+             version="0.5.0",
              rabbitmq_host=settings.rabbitmq_host,
              rabbitmq_user=settings.rabbitmq_user,
              ingest_path=settings.ingest_watch_path)
 
     # Seed default admin if no users exist
     _seed_admin()
+
+    # Phase 5: recover in-flight jobs and pick up pre-existing files
+    from app.services.startup_recovery import recover_stuck_jobs, scan_ingest_missed
+    recover_stuck_jobs()
+    scan_ingest_missed()
 
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
@@ -72,7 +77,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Sentinel Pipeline API",
         description="Distributed video analysis pipeline orchestrator",
-        version="0.3.0",
+        version="0.5.0",
         lifespan=lifespan,
     )
 
@@ -86,7 +91,7 @@ def create_app() -> FastAPI:
 
     # Routers
     from app.api import health
-    from app.api import auth, jobs, tracks, stats, users, config_api, ws
+    from app.api import auth, jobs, tracks, stats, users, config_api, ws, dlx
 
     app.include_router(health.router, prefix="/api", tags=["health"])
     app.include_router(auth.router, prefix="/api")
@@ -95,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(stats.router, prefix="/api")
     app.include_router(users.router, prefix="/api")
     app.include_router(config_api.router, prefix="/api")
+    app.include_router(dlx.router, prefix="/api")
     app.include_router(ws.router)  # /ws/jobs — no /api prefix
 
     return app

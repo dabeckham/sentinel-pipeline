@@ -1,5 +1,6 @@
 """OC Worker — Object Classification (YOLO + ByteTrack)"""
 import json
+import signal
 import time
 import pika
 import structlog
@@ -150,6 +151,21 @@ def main():
 
     conn, ch = _connect(settings)
 
+    # Graceful SIGTERM — finish current message then exit cleanly
+    _shutdown = False
+
+    def _handle_sigterm(signum, frame):
+        nonlocal _shutdown
+        log.info("oc_worker_sigterm_received")
+        _shutdown = True
+        try:
+            ch.stop_consuming()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    signal.signal(signal.SIGINT, _handle_sigterm)
+
     def on_message(ch, method, _props, body):
         try:
             msg = json.loads(body)
@@ -161,14 +177,22 @@ def main():
     ch.basic_consume(queue=settings.queue_motion_results, on_message_callback=on_message)
     log.info("oc_worker_consuming", queue=settings.queue_motion_results)
 
-    while True:
+    while not _shutdown:
         try:
             ch.start_consuming()
         except pika.exceptions.AMQPConnectionError:
+            if _shutdown:
+                break
             log.warning("oc_worker_reconnecting")
             time.sleep(5)
             conn, ch = _connect(settings)
             ch.basic_consume(queue=settings.queue_motion_results, on_message_callback=on_message)
+
+    log.info("oc_worker_stopped")
+    try:
+        conn.close()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
