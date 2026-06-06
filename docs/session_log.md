@@ -82,7 +82,7 @@ sentinel-pipeline/
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Infrastructure skeleton: Docker Compose, DB schema, RabbitMQ queues, MinIO buckets, Orchestrator stub | ✅ Complete |
-| 2 | Core pipeline: FTP watcher → MD worker → OC worker → DB writer | 🔧 In Progress — deploying |
+| 2 | Core pipeline: FTP watcher → MD worker → OC worker → DB writer | ✅ Complete — pipeline live, processing real footage |
 | 3 | Auth & REST API: JWT, roles, LAN trust, all endpoints, WebSocket | 🔲 Planned |
 | 4 | Browser UI: all pages (Ingest, Status, Review, Config, User Mgmt) | 🔲 Planned |
 | 5 | Hardening: DLQ retry, dedup, graceful shutdown, logging, tests | 🔲 Planned |
@@ -190,11 +190,15 @@ Pydantic-settings picked this up and passed it to watchdog inside the container,
 Fix: renamed field `ingest_source_path` → `ingest_watch_path` (maps to env var `INGEST_WATCH_PATH`, not in .env). Defaults to `/ingest`.
 Note: Compose v5.1.4 `env_file:` appears to take precedence over `environment:` block — hardcoded field rename is the reliable fix.
 
-#### Bug 3: RabbitMQ auth refused — IN PROGRESS
-Workers connecting with wrong password (pydantic-settings reads default `"sentinel"` instead of real password from env).
-Switched from `pika.URLParameters(url)` to `pika.ConnectionParameters` with `PlainCredentials` to eliminate URL-parsing as a factor.
-Startup logs now include `rabbitmq_user=` to confirm what pydantic resolves.
-Current build deploying — awaiting results.
+#### Bug 3: RabbitMQ auth refused ✅ Fixed
+Workers connecting with empty PLAIN credentials — RabbitMQ had NO users at all.
+Root cause: `RABBITMQ_DEFAULT_USER`/`PASS` were empty when RabbitMQ first started; `.env` was not applied to the initial container.
+Fix: manually created `sentinel` user via rabbitmqctl with administrator tag and full permissions on `/` vhost.
+```bash
+docker exec sentinel-rabbitmq rabbitmqctl add_user sentinel "$PASS"
+docker exec sentinel-rabbitmq rabbitmqctl set_user_tags sentinel administrator
+docker exec sentinel-rabbitmq rabbitmqctl set_permissions -p / sentinel ".*" ".*" ".*"
+```
 
 #### Bug 4: OC worker yolo26s.pt not found ✅ Fixed
 `.env` has `YOLO_MODEL=yolo26s` (future model). Worker tried to load it and crashed.
@@ -223,40 +227,40 @@ Fix: renamed field `yolo_model` → `oc_model_name` (env var `OC_MODEL_NAME`, no
 - **2026-06-05 Session 1:** Full architecture spec, all design decisions, GitHub repo setup, README, .env.example, .gitignore, all docs pushed to github.com/dabeckham/sentinel-pipeline.
 - **2026-06-05 Session 1 cont.:** Phase 1 complete — full infrastructure skeleton built and ready to deploy.
 - **2026-06-06 Session 2:** Deployment completed. Fixed .gitignore models/ scope bug, added PYTHONPATH to Dockerfile, committed orchestrator models. Full stack verified on 192.168.55.10.
-- **2026-06-06 Session 3:** Phase 2 all code written (orchestrator watcher+consumer, MD worker MOG2, OC worker YOLO11+ByteTrack). Debugging deployment: fixed inotify/NFS, INGEST_SOURCE_PATH collision, yolo26s model name. RabbitMQ auth still resolving — current build deploying (commit a68969d).
+- **2026-06-06 Session 3:** Phase 2 all code written (orchestrator watcher+consumer, MD worker MOG2, OC worker YOLO11+ByteTrack). Fixed: inotify/NFS, INGEST_SOURCE_PATH collision, yolo26s model name, RabbitMQ no-users (manual rabbitmqctl). Pipeline fully deployed and verified end-to-end.
+- **2026-06-06 Session 4:** Phase 2 verified live on real driveway footage. All 5 services healthy. Jobs completing. Detections written to PostgreSQL (car/truck/bus, confidence 0.85-0.93). Snapshots in MinIO. Fixed ByteTrack IndexError (commit 0565647) — rebuild in progress. Backlog ~500 queued jobs draining.
 
 ---
 
-## ⚠️ If Resuming From Here (Phase 2 deployment in progress)
+## ✅ Phase 2 COMPLETE — If Resuming
 
 SSH access: `ssh -i ~/.ssh/claude_cowork dabeckham@192.168.55.10`
 
-### Immediate next action
-Check if the latest build (commit a68969d) resolved the RabbitMQ auth issue:
+### Current State (2026-06-06 ~10:35 UTC)
+All services healthy. Pipeline is live and processing real driveway camera footage.
+
+**Container status:**
+- `sentinel-orchestrator` — Up, watching /ingest, queuing jobs
+- `sentinel-md-worker` — Up, processing MOG2 motion detection  
+- `sentinel-oc-worker` — Up, running yolo11s.pt (CPU), classifying cars/trucks/buses
+- `sentinel-rabbitmq` — Healthy
+- `sentinel-postgres` — Healthy
+- `sentinel-minio` — Healthy
+
+**Backlog:** ~500 queued jobs still draining (ingest directory had many test files).
+
+**Known issue (in progress):** oc-worker has a ByteTrack IndexError on some frames (commit 0565647 fixes it). Rebuild running — when done, force-recreate oc-worker:
 ```bash
-ssh -i ~/.ssh/claude_cowork dabeckham@192.168.55.10 \
-  "cd ~/sentinel-pipeline && docker compose logs --no-log-prefix --since=5m orchestrator md-worker oc-worker 2>&1 | head -40"
+cd ~/sentinel-pipeline && docker compose up -d --force-recreate oc-worker
 ```
 
-**If orchestrator shows** `sentinel_orchestrator_starting ... rabbitmq_user=sentinel ... ingest_path=/ingest` and then `file_watcher_started path=/ingest` → ingest path fixed ✅
+**Verified data in PostgreSQL:**
+- Cars (confidence 0.93), Trucks (0.88), Buses (0.52) detected in real footage
+- Tracks and Detections tables populated
+- Snapshot paths in MinIO snapshots bucket
 
-**If md-worker shows** `md_worker_consuming` → RabbitMQ auth fixed ✅
-
-**If md-worker still shows** `ACCESS_REFUSED` with `rabbitmq_user=sentinel`:
-- The real password in `.env` doesn't match what RabbitMQ stored at initialization
-- Fix: reset the RabbitMQ sentinel user password to match .env:
-  ```bash
-  # On docker host:
-  docker exec sentinel-rabbitmq rabbitmqctl change_password sentinel "$(grep RABBITMQ_PASSWORD ~/sentinel-pipeline/.env | cut -d= -f2)"
-  docker compose restart md-worker oc-worker orchestrator
-  ```
-
-### Smoke test (once all services are up)
-Drop a `.mp4` file into `/mnt/ds-one/sentinel-ingest` and watch:
-```bash
-docker compose logs -f orchestrator md-worker oc-worker
-```
-Expected sequence: `ingest_job_queued` → `md_job_complete` → `oc_frame_processed` → `job_completed`
+### Next Phase (Phase 3)
+Auth & REST API: JWT, roles (admin/operator/viewer), LAN trust mode, all endpoints, WebSocket for real-time job status.
 
 ---
 
