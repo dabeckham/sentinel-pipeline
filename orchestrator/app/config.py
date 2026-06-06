@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     ingest_watch_path: str = "/ingest"
     ingest_recurse: bool = True
     ingest_poll_interval: int = 10
+    # Comma-separated subdirectory names to ignore when recursing (e.g. debug output)
+    ingest_ignore_dirs: str = "debug"
 
     # Auth
     jwt_secret_key: str

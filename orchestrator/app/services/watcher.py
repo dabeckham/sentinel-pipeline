@@ -29,6 +29,8 @@ class IngestHandler(FileSystemEventHandler):
             return
         if Path(event.src_path).suffix.lower() not in VIDEO_EXTENSIONS:
             return
+        if self._is_ignored(event.src_path):
+            return
         # Brief pause — camera may still be writing the file
         time.sleep(3)
         self._process(event.src_path)
@@ -39,7 +41,15 @@ class IngestHandler(FileSystemEventHandler):
             return
         if Path(event.dest_path).suffix.lower() not in VIDEO_EXTENSIONS:
             return
+        if self._is_ignored(event.dest_path):
+            return
         self._process(event.dest_path)
+
+    def _is_ignored(self, path: str) -> bool:
+        """Return True if any path component matches an ignore dir."""
+        settings = get_settings()
+        ignore = {d.strip().lower() for d in settings.ingest_ignore_dirs.split(",") if d.strip()}
+        return any(part.lower() in ignore for part in Path(path).parts)
 
     def _process(self, path: str):
         log.info("ingest_file_detected", path=path)
