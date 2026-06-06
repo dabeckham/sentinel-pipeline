@@ -38,8 +38,18 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
     debug_motion_boxes: dict[int, list[dict]] = {}  # frame_index → boxes
     all_frames: list[np.ndarray] = []
 
+    debug_enabled = False
     if s.md_debug_video:
-        os.makedirs(s.md_debug_output_dir, exist_ok=True)
+        try:
+            os.makedirs(s.md_debug_output_dir, exist_ok=True)
+            debug_enabled = True
+        except OSError as e:
+            import structlog
+            structlog.get_logger().warning(
+                "md_debug_video_dir_unavailable",
+                path=s.md_debug_output_dir,
+                error=str(e),
+            )
 
     frame_index = 0
 
@@ -49,7 +59,7 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
             if not ret:
                 break
 
-            if s.md_debug_video:
+            if debug_enabled:
                 all_frames.append(frame.copy())
 
             if s.motion_frame_skip > 0 and frame_index % (s.motion_frame_skip + 1) != 0:
@@ -90,7 +100,7 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                     bounding_boxes=boxes,
                     crops_b64=crops_b64,
                 ))
-                if s.md_debug_video:
+                if debug_enabled:
                     debug_motion_boxes[frame_index] = boxes
 
             frame_index += 1
@@ -98,8 +108,8 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
     finally:
         cap.release()
 
-    # Render debug video if enabled
-    if s.md_debug_video and all_frames:
+    # Render debug video if enabled and output dir is writable
+    if debug_enabled and all_frames:
         _write_debug_video(video_path, all_frames, debug_motion_boxes, fps,
                            frame_width, frame_height, s.md_debug_output_dir)
 
