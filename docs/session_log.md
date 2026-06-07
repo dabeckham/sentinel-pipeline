@@ -24,18 +24,18 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 
 ---
 
-## Current Status — ALL 5 PHASES COMPLETE ✅ + Post-Launch Tuning
+## Current Status — ALL 5 PHASES COMPLETE ✅ + v0.6.0 shipped
 
-**Orchestrator version: 0.5.0**  
-**Last commit: `f8dc53e`** — snapshot_bbox: best-shot bbox stored in tracks table (2026-06-07)  
-**Alembic migration: 0003** (snapshot_bbox JSON column added to tracks)  
-**40 GitHub issues total. Issues #34–40 fixed session 12. Session 13: #41 (snapshot_bbox) deployed.**
+**Orchestrator version: 0.6.0**  
+**Last commit: `b122d90`** — Jobs page: filename fix, track count, resizable cols, kill button (2026-06-07)  
+**Alembic migration: 0004** (track_type String(16) column + index on tracks)  
+**31 GitHub issues total. #24–31 created and closed this session.**
 
 ### Live Services
 | Service | URL | Status |
 |---|---|---|
 | Browser UI | http://192.168.55.10:3000 | ✅ Up |
-| Orchestrator API | http://192.168.55.10:8000 | ✅ Up (v0.5.0) |
+| Orchestrator API | http://192.168.55.10:8000 | ✅ Up (v0.6.0) |
 | API Docs | http://192.168.55.10:8000/docs | ✅ Up |
 | RabbitMQ Mgmt | http://192.168.55.10:15672 | ✅ Up |
 | MinIO Console | http://192.168.55.10:9001 | ✅ Up |
@@ -109,8 +109,11 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
 | GET | /api/jobs | any | Paginated job list (filter by status) |
 | GET | /api/jobs/{id} | any | Single job |
 | GET | /api/jobs/{id}/tracks | any | Tracks for a job |
-| GET | /api/tracks | any | Paginated tracks (filter by camera/class/date, sort, detection_count, started_at/ended_at) |
+| GET | /api/jobs | any | Paginated job list (filter by status); returns camera_name, completed_at, track_count |
+| POST | /api/jobs/{id}/cancel | operator | Mark active job as failed (cancelled) |
+| GET | /api/tracks | any | Paginated tracks (filter by camera/class/track_type/date, sort, infinite scroll) |
 | GET | /api/tracks/cameras | any | Distinct camera names with associated tracks |
+| GET | /api/tracks/active-days | any | Distinct dates with track data for a given month (calendar highlighting) |
 | GET | /api/tracks/{id} | any | Track detail with full detections list |
 | GET | /api/snapshots/{path} | any | Proxy MinIO snapshot images to browser (auth required, 1-day cache) |
 | GET/PUT | /api/config | admin | Runtime config (LAN trust toggle etc) |
@@ -167,6 +170,7 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-07 | 11 | Major pipeline rework. (1) Replaced OCR entirely with filename parsing — `CAMNAME_NN_YYYYmmddHHMMSS` → camera name + timestamp, per-frame times from FPS. (2) Switched from per-crop YOLO+ByteTrack to `model.track(full_frame, tracker="botsort.yaml")` — BoT-SORT runs on complete frames for full context + appearance ReID. reset_tracker() on is_final separates jobs cleanly. (3) Best-shot thumbnail: OC worker tracks frame where bbox vertical center is closest to frame center, saves as `_best.jpg`, overwrites when better. Per-detection `_f{frame}.jpg` kept for playback. (4) md_processing status: MD worker publishes status ping to oc_results at job start. (5) Jobs page: removed duplicate WS (Layout owns it), adaptive polling 2s/8s with loadRef/dataRef to fix stale closure. Toast only on completed/failed. (6) Fixed year missing from track dates in UI (fmtTime missing `year: 'numeric'`). Issues #26–#33 fixed. DB/store purged twice for fresh testing. |
 | 2026-06-07 | 12 | Studied Frigate source in running container. Replaced MOG2 with Frigate's weighted-average motion detector (avg_frame + avg_delta temporal smoothing, background only absorbs after 10 consecutive motion frames, contrast normalization). Replaced BoT-SORT with Norfair 2.3.0 + Frigate's scale-normalized distance function (normalizes position change by object's own bbox size). Fixed Norfair: only emit tracks with live detections this frame (not Kalman-predicted positions — used frame_index tag in Detection.data). Lowered YOLO confidence 0.85→0.5, raised hit_counter_max 8→30. Fixed model weight caching: volume now at /app/models so yolo11s.pt persists across restarts. Added POST /api/snapshots/cleanup to delete _f{frame}.jpg playback frames (keep only _best.jpg). Added ARG CACHEBUST to Dockerfile.gpu for targeted cache busting. Discord/status notifications. |
 | 2026-06-07 | 13 | Completed snapshot_bbox work from session 12. Alembic migration 0003 (snapshot_bbox JSON column on tracks). OC worker publishes snapshot_bbox only when frame is new best-shot. Result consumer persists it. Tracks API: removed first_det_sq subquery, reads t.snapshot_bbox directly. BboxOverlay SVG component in UI: cyan dashed rectangle drawn over thumbnail and modal snapshot viewer aligned to bbox coords, strokeWidth inversely scaled by zoom. Deployed: git pull → alembic upgrade head → rebuild/restart orchestrator + oc-worker. SSH permission granted by user for future deploys. |
+| 2026-06-07 | 14 | v0.6.0. (1) Phase 1 dwell-time: track_type column (migration 0004), _classify_tracks() at job close-out using normalized centroid displacement (threshold 0.3), tracker_initialization_delay raised 0→2 (ghost tracks), tracker_min_displacement config knob, track_type API filter, Moving/Stationary/All segmented control UI, type badges on cards + detail modal. (2) Tracks page overhaul: infinite scroll (IntersectionObserver), multi-select camera/class dropdowns, time preset filter (Today/Week/Month/Custom), DateRangeModal with MiniCalendar + active-day dots (/tracks/active-days endpoint), BboxOverlay on cards with CSS transform math. (3) Camera timestamp fix: store UTC, display UTC (fmtTime timeZone:'UTC'). (4) Jobs page fixes: filename (file_path basename), track_count (subquery join), completed_at + camera_name added to schema, resizable columns (ResizerHandle drag), Kill button (POST /jobs/{id}/cancel, two-step confirm), error message inline. (5) Backfilled 1133 existing tracks: 151 moving, 982 stationary. (6) GitHub issues #24–31 created and closed. (7) GitHub issue #23 = dwell time 4-phase design (open). Memory rules updated: between-task checklist, Discord rules, no invented issue numbers. |
 
 ---
 
@@ -215,9 +219,11 @@ Frontend fetches with `Authorization: Bearer` header, converts to blob URL (plai
 
 ## What's Next
 
-- **Verify Norfair tracking quality** — drop fresh camera footage, confirm track count per object is 1 (or close), check DB for fragmented tracks
-- **Run cleanup** — call `POST /api/snapshots/cleanup` (admin) to delete accumulated `_f{frame}.jpg` playback frames, keeping only `_best.jpg`
-- ~~**Bbox overlay on full frames**~~ — DONE session 13 (BboxOverlay SVG component, snapshot_bbox column)
+- **Dwell time Phase 2** (issue #23): Similar-bbox search — `GET /tracks/{id}/similar?iou_threshold=0.7`, "Find similar" button on stationary track modal
+- **Dwell time Phase 3**: Dwell zones table, admin UI to draw zones, auto-tag at job close-out
+- **Dwell time Phase 4**: SAM3 segmentation worker (future)
+- **Issue #22**: Replace MOG2 with Frigate-style weighted-average motion detector (open)
+- **Run cleanup** — `POST /api/snapshots/cleanup` (admin) to delete accumulated `_f{frame}.jpg` frames
 - **Phase 6:** RTSP live stream worker pool
 - **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
 
