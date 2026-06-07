@@ -18,19 +18,15 @@ class Settings(BaseSettings):
     minio_use_ssl: bool = False
     # minio_bucket_crops removed — crops now travel in-memory via RabbitMQ (issue #13)
 
-    mog2_history: int = 500
-    mog2_var_threshold: float = 25.0   # raised 16→25: less sensitive, fewer false positives
-    mog2_detect_shadows: bool = False   # shadows=False: avoids grey-pixel bleed expanding boxes
-    motion_min_contour_area: int = 800  # raised 500→800: filter small noise/leaves/birds
+    # Frigate-style motion detection parameters
+    motion_frame_height: int = 100      # detection frame height (maintains aspect ratio)
+    motion_threshold: int = 25          # delta threshold (1-255); lower = more sensitive
+    motion_delta_alpha: float = 0.2     # temporal smoothing of frame deltas (Frigate default)
+    motion_frame_alpha: float = 0.01    # background learning rate (Frigate default)
+    motion_improve_contrast: bool = True
+    motion_min_contour_area: int = 10   # min contour area in motion-frame pixels
     motion_frame_skip: int = 2
-    # Resize factor applied before MOG2 — bboxes are scaled back to original res for cropping
-    # 0.25 = 640×360 from 2560×1440 (16× fewer pixels, ~8-10× faster MOG2)
-    motion_scale: float = 0.25
-    # Merge nearby bboxes into whole-object bboxes after contour finding.
-    # Boxes within this many scaled-frame pixels of each other are merged.
-    # At scale=0.25: 60px here = 240px in original resolution.
-    # Large vehicles can fragment into hood/roof/trunk contours — 60 scaled px merges them.
-    motion_merge_dist: int = 60
+    motion_merge_dist: int = 10         # merge nearby boxes (in motion-frame pixels)
 
     # Debug video (issue #14) — set MD_DEBUG_VIDEO=true to enable
     md_debug_video: bool = False

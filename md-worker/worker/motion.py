@@ -1,4 +1,14 @@
-"""MOG2-based motion detection. Returns per-frame results with base64-encoded crops."""
+"""Frigate-style motion detection using weighted frame averaging.
+
+Key differences from MOG2:
+- Running average background (avg_frame) instead of adaptive GMM
+- Temporal delta smoothing (avg_delta) eliminates single-frame noise
+  (rain drops, compression artifacts, insects) that plague MOG2
+- Background only absorbs moving objects after 10 consecutive motion frames,
+  preventing slow-moving objects from disappearing into the background
+- Contrast normalization via percentile stretch improves sensitivity in
+  poorly-lit scenes without amplifying uniform noise
+"""
 import base64
 import os
 from dataclasses import dataclass
@@ -8,11 +18,7 @@ from worker.config import get_settings
 
 
 def _merge_boxes(boxes: list[tuple], merge_dist: int) -> list[tuple]:
-    """
-    Greedily merge (sx, sy, sw, sh) boxes that are within merge_dist pixels
-    of each other. Repeat until no further merges are possible.
-    Produces one stable whole-object bbox per cluster of motion regions.
-    """
+    """Greedily merge (x, y, w, h) boxes within merge_dist pixels of each other."""
     if not boxes:
         return []
     boxes = list(boxes)
@@ -29,7 +35,6 @@ def _merge_boxes(boxes: list[tuple], merge_dist: int) -> list[tuple]:
                 if used[j]:
                     continue
                 x2, y2, w2, h2 = boxes[j]
-                # Check if bboxes are within merge_dist of each other
                 if (x1 - merge_dist < x2 + w2 and x1 + w1 + merge_dist > x2 and
                         y1 - merge_dist < y2 + h2 and y1 + h1 + merge_dist > y2):
                     nx = min(x1, x2)
@@ -49,8 +54,8 @@ class MotionFrame:
     frame_index: int
     timestamp_ms: int
     bounding_boxes: list[dict]   # [{x, y, w, h}, ...] in original resolution
-    crops_b64: list[str]         # base64-encoded JPEG per bbox — used by OC for classification
-    frame_b64: str               # base64-encoded JPEG of the full original frame — saved as snapshot
+    crops_b64: list[str]         # base64-encoded JPEG per bbox
+    frame_b64: str               # base64-encoded JPEG of the full original frame
 
 
 def detect_motion(video_path: str) -> list[MotionFrame]:
@@ -63,21 +68,21 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
     frame_width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Scale factor for MOG2 — detect on smaller frame, crop from original
-    scale = s.motion_scale
-    small_w = max(1, int(frame_width * scale))
-    small_h = max(1, int(frame_height * scale))
-    inv = 1.0 / scale
+    # Compute motion-detection frame size (same aspect ratio, fixed height)
+    motion_h = s.motion_frame_height
+    motion_w = max(1, motion_h * frame_width // frame_height)
+    # Scale factor to map motion-frame coordinates back to original resolution
+    resize_factor = frame_height / motion_h
 
-    fgbg = cv2.createBackgroundSubtractorMOG2(
-        history=s.mog2_history,
-        varThreshold=s.mog2_var_threshold,
-        detectShadows=s.mog2_detect_shadows,
-    )
+    # Weighted running averages — the core of Frigate's motion algorithm
+    avg_frame = np.zeros((motion_h, motion_w), np.float32)
+    avg_delta = np.zeros((motion_h, motion_w), np.float32)
+    motion_frame_count = 0  # consecutive frames with motion
+    frame_counter = 0       # frames seen (for calibration gate)
 
     results: list[MotionFrame] = []
 
-    # Debug video — written at scaled resolution (small_w x small_h) to keep encoding fast
+    # Debug video
     debug_writer = None
     if s.md_debug_video:
         try:
@@ -85,7 +90,7 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
             basename = os.path.splitext(os.path.basename(video_path))[0]
             out_path = os.path.join(s.md_debug_output_dir, f"{basename}_debug.mp4")
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            debug_writer = cv2.VideoWriter(out_path, fourcc, fps, (small_w, small_h))
+            debug_writer = cv2.VideoWriter(out_path, fourcc, fps, (motion_w, motion_h))
         except OSError as e:
             import structlog
             structlog.get_logger().warning(
@@ -95,8 +100,7 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
             )
 
     frame_index = 0
-    motion_boxes_this_frame: list[dict] = []
-    last_known_boxes: list[dict] = []  # carried forward to skipped frames in debug video
+    last_known_boxes: list[dict] = []
 
     try:
         while True:
@@ -105,89 +109,130 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                 break
 
             skip = s.motion_frame_skip > 0 and frame_index % (s.motion_frame_skip + 1) != 0
-            motion_boxes_this_frame = []
+            motion_boxes_this_frame: list[dict] = []
 
             if not skip:
-                # Resize for MOG2 — much faster on smaller frames
-                small = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR) \
-                    if scale < 1.0 else frame
+                # Grayscale + resize to motion frame size
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                resized = cv2.resize(gray, (motion_w, motion_h), interpolation=cv2.INTER_LINEAR)
 
-                fgmask = fgbg.apply(small)
-                _, fgmask = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
+                # Contrast normalization: stretch 4th–96th percentile to 0–255
+                if s.motion_improve_contrast:
+                    lo = np.percentile(resized, 4)
+                    hi = np.percentile(resized, 96)
+                    if lo < hi:
+                        resized = np.clip(resized, lo, hi)
+                        resized = ((resized - lo) / (hi - lo) * 255).astype(np.uint8)
 
-                contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                resized_f = resized.astype(np.float32)
 
-                # Collect raw bboxes in scaled-frame coordinates, filter tiny noise
-                raw_boxes = []
-                for cnt in contours:
-                    if cv2.contourArea(cnt) < s.motion_min_contour_area:
-                        continue
-                    raw_boxes.append(cv2.boundingRect(cnt))  # (sx, sy, sw, sh)
+                if frame_counter < 30:
+                    # Calibration: initialize background average
+                    cv2.accumulateWeighted(resized_f, avg_frame, 1.0)
+                    frame_counter += 1
+                else:
+                    frame_counter += 1
 
-                # Merge nearby boxes into whole-object bboxes so ByteTrack gets
-                # a stable position to match across frames
-                merged_scaled = _merge_boxes(raw_boxes, s.motion_merge_dist)
+                    # Absolute difference from current background estimate
+                    frame_delta = cv2.absdiff(resized, cv2.convertScaleAbs(avg_frame))
 
-                boxes = []
-                crops_b64 = []
-                fh, fw = frame.shape[:2]
+                    # Smooth the delta over time — a single raindrop won't persist
+                    cv2.accumulateWeighted(
+                        frame_delta.astype(np.float32), avg_delta, s.motion_delta_alpha
+                    )
 
-                for sx, sy, sw, sh in merged_scaled:
-                    # Scale back to original resolution
-                    x = int(sx * inv)
-                    y = int(sy * inv)
-                    w = int(sw * inv)
-                    h = int(sh * inv)
+                    # Threshold current frame delta
+                    _, current_thresh = cv2.threshold(
+                        frame_delta, s.motion_threshold, 255, cv2.THRESH_BINARY
+                    )
 
-                    # Clamp to frame bounds
-                    x, y = max(0, x), max(0, y)
-                    w, h = min(w, fw - x), min(h, fh - y)
-                    if w < 4 or h < 4:
-                        continue
+                    # Only use smoothed delta where the current frame also shows change
+                    avg_delta_img = cv2.convertScaleAbs(avg_delta)
+                    avg_delta_img = cv2.bitwise_and(avg_delta_img, current_thresh)
 
-                    boxes.append({"x": x, "y": y, "w": w, "h": h})
-                    crop = frame[y:y + h, x:x + w]
-                    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ok:
-                        crops_b64.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+                    # Final threshold on the intersection
+                    _, thresh = cv2.threshold(
+                        avg_delta_img, s.motion_threshold, 255, cv2.THRESH_BINARY
+                    )
 
-                if boxes:
-                    timestamp_ms = int(frame_index * 1000 / fps)
-                    # Encode full original frame — OC worker saves this as the detection snapshot
-                    ok_f, buf_f = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                    frame_b64 = base64.b64encode(buf_f.tobytes()).decode("ascii") if ok_f else ""
-                    results.append(MotionFrame(
-                        frame_index=frame_index,
-                        timestamp_ms=timestamp_ms,
-                        bounding_boxes=boxes,
-                        crops_b64=crops_b64,
-                        frame_b64=frame_b64,
-                    ))
-                    motion_boxes_this_frame = boxes
-                    last_known_boxes = boxes
+                    # Dilate to fill holes, then find contours
+                    thresh_dil = cv2.dilate(thresh, None, iterations=2)
+                    contours, _ = cv2.findContours(
+                        thresh_dil, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
 
-            # Write debug frame at scaled resolution — fast encode, low NFS I/O
+                    raw_boxes_scaled = []
+                    for c in contours:
+                        if cv2.contourArea(c) < s.motion_min_contour_area:
+                            continue
+                        x, y, w, h = cv2.boundingRect(c)
+                        raw_boxes_scaled.append((x, y, w, h))
+
+                    # Update background average
+                    if raw_boxes_scaled:
+                        motion_frame_count += 1
+                        if motion_frame_count >= 10:
+                            # Only absorb after 10 consecutive motion frames
+                            # prevents moving objects from being erased into background
+                            cv2.accumulateWeighted(resized_f, avg_frame, s.motion_frame_alpha)
+                    else:
+                        cv2.accumulateWeighted(resized_f, avg_frame, s.motion_frame_alpha)
+                        motion_frame_count = 0
+
+                    if raw_boxes_scaled:
+                        fh, fw = frame.shape[:2]
+                        merged_scaled = _merge_boxes(raw_boxes_scaled, s.motion_merge_dist)
+
+                        boxes = []
+                        crops_b64 = []
+                        for sx, sy, sw, sh in merged_scaled:
+                            # Scale back to original resolution
+                            x = int(sx * resize_factor)
+                            y = int(sy * resize_factor)
+                            w = int(sw * resize_factor)
+                            h = int(sh * resize_factor)
+                            x, y = max(0, x), max(0, y)
+                            w, h = min(w, fw - x), min(h, fh - y)
+                            if w < 4 or h < 4:
+                                continue
+                            boxes.append({"x": x, "y": y, "w": w, "h": h})
+                            crop = frame[y:y + h, x:x + w]
+                            ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            if ok:
+                                crops_b64.append(base64.b64encode(buf.tobytes()).decode("ascii"))
+
+                        if boxes:
+                            timestamp_ms = int(frame_index * 1000 / fps)
+                            ok_f, buf_f = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                            frame_b64 = base64.b64encode(buf_f.tobytes()).decode("ascii") if ok_f else ""
+                            results.append(MotionFrame(
+                                frame_index=frame_index,
+                                timestamp_ms=timestamp_ms,
+                                bounding_boxes=boxes,
+                                crops_b64=crops_b64,
+                                frame_b64=frame_b64,
+                            ))
+                            motion_boxes_this_frame = boxes
+                            last_known_boxes = boxes
+
             if debug_writer is not None:
-                dbg_frame = small if not skip else cv2.resize(
-                    frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
-
-                # Green = detected this frame, Yellow = carried forward from last detection
+                gray_small = cv2.cvtColor(
+                    cv2.resize(frame, (motion_w, motion_h), interpolation=cv2.INTER_LINEAR),
+                    cv2.COLOR_BGR2GRAY,
+                )
+                dbg = cv2.cvtColor(gray_small, cv2.COLOR_GRAY2BGR)
                 draw_boxes = motion_boxes_this_frame or (last_known_boxes if skip else [])
                 color = (0, 255, 0) if motion_boxes_this_frame else (0, 255, 255)
-
                 if draw_boxes:
-                    annotated = dbg_frame.copy()
                     for box in draw_boxes:
-                        sx = int(box["x"] * scale)
-                        sy = int(box["y"] * scale)
-                        sw = int(box["w"] * scale)
-                        sh = int(box["h"] * scale)
-                        cv2.rectangle(annotated, (sx, sy), (sx + sw, sy + sh), color, 2)
-                        cv2.putText(annotated, f"f{frame_index}", (sx, max(sy - 4, 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-                    debug_writer.write(annotated)
-                else:
-                    debug_writer.write(dbg_frame)
+                        scale_x = motion_w / frame.shape[1]
+                        scale_y = motion_h / frame.shape[0]
+                        sx = int(box["x"] * scale_x)
+                        sy = int(box["y"] * scale_y)
+                        sw = int(box["w"] * scale_x)
+                        sh = int(box["h"] * scale_y)
+                        cv2.rectangle(dbg, (sx, sy), (sx + sw, sy + sh), color, 2)
+                debug_writer.write(dbg)
 
             frame_index += 1
 

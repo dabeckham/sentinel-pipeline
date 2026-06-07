@@ -1,5 +1,6 @@
 ultralytics==8.3.0
 supervision==0.22.0
+norfair==2.3.0
 pika==1.3.2
 minio==7.2.9
 pydantic-settings==2.4.0
