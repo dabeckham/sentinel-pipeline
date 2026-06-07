@@ -44,18 +44,20 @@ function fmtTime(iso) {
 }
 
 // ── Snapshot image with fallback ──────────────────────────────────────────────
-function SnapshotImg({ path, alt = 'snapshot' }) {
+function SnapshotImg({ path, alt = 'snapshot', style = {} }) {
   const [blobUrl, setBlobUrl] = useState(null)
   const [errored, setErrored] = useState(false)
+  const currentUrlRef = useRef(null)
+
+  // Revoke on unmount
+  useEffect(() => () => { if (currentUrlRef.current) URL.revokeObjectURL(currentUrlRef.current) }, [])
 
   useEffect(() => {
     if (!path) return
-    // Reset on every path change so the old image doesn't linger
-    setBlobUrl(null)
     setErrored(false)
+    // Do NOT clear blobUrl — keep old frame visible until new one loads (prevents flicker)
 
     let cancelled = false
-    let objectUrl = null
     const token = localStorage.getItem('sentinel_token')
     fetch(`/api/snapshots/${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -66,15 +68,14 @@ function SnapshotImg({ path, alt = 'snapshot' }) {
       })
       .then((blob) => {
         if (cancelled) return
-        objectUrl = URL.createObjectURL(blob)
-        setBlobUrl(objectUrl)
+        const newUrl = URL.createObjectURL(blob)
+        if (currentUrlRef.current) URL.revokeObjectURL(currentUrlRef.current)
+        currentUrlRef.current = newUrl
+        setBlobUrl(newUrl)
       })
       .catch(() => { if (!cancelled) setErrored(true) })
 
-    return () => {
-      cancelled = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
+    return () => { cancelled = true }
   }, [path])
 
   if (!path || errored) {
@@ -91,7 +92,7 @@ function SnapshotImg({ path, alt = 'snapshot' }) {
     <img
       src={blobUrl}
       alt={alt}
-      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', ...style }}
     />
   )
 }
@@ -205,6 +206,45 @@ function TrackDrawer({ trackId, onClose }) {
     ? (curDet?.crop_path ?? detail?.snapshot_path)
     : detail?.snapshot_path
 
+  // Zoom / pan state
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const dragRef = useRef(null)
+  const viewerRef = useRef(null)
+
+  // Reset zoom+pan on frame change
+  useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [detIdx])
+
+  const handleWheel = useCallback((e) => {
+    e.preventDefault()
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+    setZoom((z) => {
+      const next = Math.min(8, Math.max(1, z * factor))
+      if (next === 1) setPan({ x: 0, y: 0 })
+      return next
+    })
+  }, [])
+
+  // Attach wheel as non-passive so preventDefault works
+  useEffect(() => {
+    const el = viewerRef.current
+    if (!el) return
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
+
+  const handleMouseDown = (e) => {
+    if (zoom <= 1) return
+    e.preventDefault()
+    dragRef.current = { startX: e.clientX - pan.x, startY: e.clientY - pan.y }
+  }
+  const handleMouseMove = (e) => {
+    if (!dragRef.current) return
+    setPan({ x: e.clientX - dragRef.current.startX, y: e.clientY - dragRef.current.startY })
+  }
+  const handleMouseUp = () => { dragRef.current = null }
+  const handleDoubleClick = () => { setZoom(1); setPan({ x: 0, y: 0 }) }
+
   const duration = detail ? fmtDuration(detail.started_at, detail.ended_at) : null
   const startTime = detail ? fmtTime(detail.started_at) : null
   const endTime = detail ? fmtTime(detail.ended_at) : null
@@ -253,21 +293,50 @@ function TrackDrawer({ trackId, onClose }) {
 
           {!loading && detail && (
             <div className="flex flex-col overflow-y-auto">
-              {/* Snapshot viewer */}
-              <div className="relative w-full bg-black shrink-0" style={{ height: '220px' }}>
-                <SnapshotImg path={currentSnapshotPath} />
+              {/* Snapshot viewer — zoomable + draggable */}
+              <div
+                ref={viewerRef}
+                className="relative w-full bg-black shrink-0 overflow-hidden"
+                style={{ height: '280px', cursor: zoom > 1 ? (dragRef.current ? 'grabbing' : 'grab') : 'default' }}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                onDoubleClick={handleDoubleClick}
+              >
+                <div style={{
+                  position: 'absolute', inset: 0,
+                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                  transformOrigin: 'center center',
+                  transition: dragRef.current ? 'none' : 'transform 0.15s ease',
+                  willChange: 'transform',
+                }}>
+                  <SnapshotImg path={currentSnapshotPath} />
+                </div>
 
                 {/* Frame counter overlay */}
                 {dets.length > 0 && (
-                  <div className="absolute top-2 right-2 bg-black/70 text-white text-xs font-mono px-2 py-1 rounded">
+                  <div className="absolute top-2 right-2 bg-black/70 text-white text-xs font-mono px-2 py-1 rounded pointer-events-none">
                     {detIdx + 1} / {dets.length}
                   </div>
                 )}
 
-                {/* Current detection confidence overlay */}
+                {/* Confidence + frame overlay */}
                 {curDet && (
-                  <div className="absolute top-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded">
+                  <div className="absolute top-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded pointer-events-none">
                     f{curDet.frame_index} · {fmtConfidence(curDet.confidence)}
+                  </div>
+                )}
+
+                {/* Zoom hint */}
+                {zoom === 1 && (
+                  <div className="absolute bottom-2 right-2 bg-black/50 text-slate-400 text-xs px-2 py-1 rounded pointer-events-none">
+                    scroll to zoom · drag to pan · dbl-click reset
+                  </div>
+                )}
+                {zoom > 1 && (
+                  <div className="absolute bottom-2 right-2 bg-black/50 text-slate-400 text-xs px-2 py-1 rounded pointer-events-none">
+                    {Math.round(zoom * 100)}%
                   </div>
                 )}
               </div>
