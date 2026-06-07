@@ -118,6 +118,12 @@ services:
       MINIO_ENDPOINT: minio:9000
     volumes:
       - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
+      # nvidia-smi for metrics endpoint — read-only binary + device access
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+    devices:
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidia1:/dev/nvidia1
     ports:
       - "${PORT_ORCHESTRATOR:-8000}:8000"
     networks:
