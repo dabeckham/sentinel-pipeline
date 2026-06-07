@@ -19,6 +19,7 @@ class TrackResponse(BaseModel):
     camera_name: Optional[str] = None
     # Computed
     detection_count: Optional[int] = None
+    snapshot_bbox: Optional[dict] = None   # bbox of first detection — for thumbnail auto-zoom
 
     model_config = {"from_attributes": True}
 

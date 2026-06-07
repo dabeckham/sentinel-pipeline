@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../api.js'
 
 // ── Class colour map ──────────────────────────────────────────────────────────
@@ -102,6 +102,40 @@ function SnapshotImg({ path, alt = 'snapshot', style = {}, onNaturalSize }) {
 function TrackCard({ track, onClick }) {
   const duration = fmtDuration(track.started_at, track.ended_at)
   const time = fmtTime(track.started_at)
+  const [thumbSize, setThumbSize] = useState(null)
+  const thumbRef = useRef(null)
+
+  // Compute CSS transform to zoom the thumbnail to the detected bbox
+  const thumbTransform = useMemo(() => {
+    const bbox = track.snapshot_bbox
+    if (!bbox || !thumbSize || !thumbRef.current) return null
+    const cw = thumbRef.current.clientWidth
+    const ch = thumbRef.current.clientHeight   // 160px
+    const { w: iw, h: ih } = thumbSize
+
+    // objectFit:contain scale — image is letterboxed inside the container
+    const scale = Math.min(cw / iw, ch / ih)
+    const rendW = iw * scale
+    const rendH = ih * scale
+    // Top-left corner of the rendered image within the container
+    const ox = (cw - rendW) / 2
+    const oy = (ch - rendH) / 2
+
+    // Bbox centre in container coords
+    const bcx = ox + (bbox.x + bbox.w / 2) * scale
+    const bcy = oy + (bbox.y + bbox.h / 2) * scale
+
+    // Zoom so bbox fills ~70% of the smaller container dimension
+    const zoomX = cw * 0.7 / (bbox.w * scale)
+    const zoomY = ch * 0.7 / (bbox.h * scale)
+    const z = Math.min(6, Math.max(1.2, Math.min(zoomX, zoomY)))
+
+    // Pan to centre the bbox — translate applied before scale so divide by z
+    const tx = (cw / 2 - bcx)
+    const ty = (ch / 2 - bcy)
+
+    return `translate(${tx}px, ${ty}px) scale(${z})`
+  }, [track.snapshot_bbox, thumbSize])
 
   return (
     <button
@@ -109,8 +143,15 @@ function TrackCard({ track, onClick }) {
       className="group bg-slate-800 border border-slate-700 rounded-xl overflow-hidden hover:border-brand/60 hover:shadow-lg hover:shadow-brand/10 transition-all text-left w-full"
     >
       {/* Thumbnail */}
-      <div className="relative w-full overflow-hidden bg-slate-700/40" style={{ height: '160px' }}>
-        <SnapshotImg path={track.snapshot_path} />
+      <div ref={thumbRef} className="relative w-full overflow-hidden bg-slate-700/40" style={{ height: '160px' }}>
+        <div style={{
+          position: 'absolute', inset: 0,
+          transform: thumbTransform ?? 'none',
+          transformOrigin: 'center center',
+          transition: 'transform 0.3s ease',
+        }}>
+          <SnapshotImg path={track.snapshot_path} onNaturalSize={setThumbSize} />
+        </div>
         {/* Class badge overlay */}
         <div className="absolute top-2 left-2">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full border capitalize ${classColor(track.class_label)}`}>
@@ -207,6 +248,16 @@ function TrackDrawer({ trackId, onClose }) {
     ? (curDet?.crop_path ?? detail?.snapshot_path)
     : detail?.snapshot_path
 
+  // AutoZoom preference — persisted in localStorage, default on
+  const [autoZoom, setAutoZoom] = useState(() =>
+    localStorage.getItem('sentinel_autoZoom') !== 'false'
+  )
+  const toggleAutoZoom = (v) => {
+    setAutoZoom(v)
+    localStorage.setItem('sentinel_autoZoom', v ? 'true' : 'false')
+    if (!v) { setZoom(1); setPan({ x: 0, y: 0 }) }
+  }
+
   // Zoom / pan state
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
@@ -216,6 +267,7 @@ function TrackDrawer({ trackId, onClose }) {
 
   // Auto-zoom to bbox when detection changes (if bbox available + image size known)
   useEffect(() => {
+    if (!autoZoom) return
     const bbox = curDet?.bbox
     const viewer = viewerRef.current
     if (!bbox || !imgSize || !viewer) {
@@ -241,7 +293,7 @@ function TrackDrawer({ trackId, onClose }) {
     setZoom(targetZoom)
     // Translate to centre bbox: negate because we move image opposite to bbox offset
     setPan({ x: -bboxCx * targetZoom / 1, y: -bboxCy * targetZoom / 1 })
-  }, [detIdx, imgSize])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [detIdx, imgSize, autoZoom])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
@@ -305,12 +357,23 @@ function TrackDrawer({ trackId, onClose }) {
               </p>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white transition-colors text-xl leading-none"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoZoom}
+                onChange={(e) => toggleAutoZoom(e.target.checked)}
+                className="accent-brand w-3 h-3"
+              />
+              Auto-zoom
+            </label>
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-white transition-colors text-xl leading-none"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* Body */}
