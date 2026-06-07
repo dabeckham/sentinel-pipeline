@@ -20,14 +20,14 @@ class Settings(BaseSettings):
 
     # OC_MODEL_NAME avoids collision with YOLO_MODEL in .env (which may name a future model)
     oc_model_name: str = "yolo11s"
-    oc_confidence_threshold: float = 0.85
+    oc_confidence_threshold: float = 0.5   # lowered from 0.85 — 0.85 missed too many detections causing track gaps
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
     # Norfair tracker parameters (Frigate defaults)
     tracker_distance_threshold: float = 2.5   # max normalised distance to match a detection
     tracker_initialization_delay: int = 0     # frames before a new track is confirmed
-    tracker_hit_counter_max: int = 8          # frames a track survives without a detection
+    tracker_hit_counter_max: int = 30         # frames a track survives without a detection (sparse motion frames need more)
 
     # YOLO class allowlist — only these labels are forwarded to ByteTrack / stored.
     # Comma-separated. Empty string = allow all (not recommended).

@@ -131,10 +131,15 @@ def reset_tracker():
 # Per-frame tracking
 # ---------------------------------------------------------------------------
 
-def track_full_frame(full_frame: np.ndarray, video_fps: float = 30.0) -> list[dict]:
+def track_full_frame(
+    full_frame: np.ndarray,
+    video_fps: float = 30.0,
+    frame_index: int = 0,
+) -> list[dict]:
     """
     Run YOLO detection on a full frame, feed detections to Norfair tracker.
-    Returns list of {track_id, class_label, confidence, bbox}.
+    Returns list of {track_id, class_label, confidence, bbox} — only for tracks
+    that had a live YOLO detection this frame (not Kalman-predicted positions).
     bbox is {x, y, w, h} in full-frame pixel coordinates.
     """
     s = get_settings()
@@ -151,12 +156,13 @@ def track_full_frame(full_frame: np.ndarray, video_fps: float = 30.0) -> list[di
     )
 
     if not results or results[0].boxes is None or len(results[0].boxes) == 0:
-        tracked = tracker.update(detections=[])
-        return _extract_active(tracked)
+        # Tick the tracker with no detections so Kalman state advances;
+        # don't emit anything — no real detection happened.
+        tracker.update(detections=[])
+        return []
 
     boxes = results[0].boxes
     norfair_detections = []
-    box_meta = []  # parallel list: (class_label, confidence)
 
     for i in range(len(boxes)):
         x1, y1, x2, y2 = boxes.xyxy[i].tolist()
@@ -164,21 +170,30 @@ def track_full_frame(full_frame: np.ndarray, video_fps: float = 30.0) -> list[di
         conf     = float(boxes.conf[i])
         label    = model.names[class_id]
 
-        # Norfair expects [[x1,y1],[x2,y2]]
         points = np.array([[x1, y1], [x2, y2]])
-        det = Detection(points=points, label=label, data={"confidence": conf})
+        det = Detection(
+            points=points,
+            label=label,
+            data={"confidence": conf, "frame_index": frame_index},
+        )
         norfair_detections.append(det)
-        box_meta.append((label, conf))
 
     tracked = tracker.update(detections=norfair_detections)
-    return _extract_active(tracked)
+    return _extract_active(tracked, frame_index)
 
 
-def _extract_active(tracked_objects) -> list[dict]:
-    """Convert Norfair tracked objects to our detection dicts."""
+def _extract_active(tracked_objects, frame_index: int) -> list[dict]:
+    """
+    Convert Norfair tracked objects to detection dicts.
+    Only returns tracks that were matched to a live detection this frame —
+    ignores tracks being kept alive by Kalman prediction only.
+    """
     detections = []
     for t in tracked_objects:
         if t.last_detection is None:
+            continue
+        # Skip tracks whose last real detection was from a previous frame
+        if t.last_detection.data.get("frame_index") != frame_index:
             continue
         pts = t.estimate.flatten()
         x1, y1, x2, y2 = int(pts[0]), int(pts[1]), int(pts[2]), int(pts[3])

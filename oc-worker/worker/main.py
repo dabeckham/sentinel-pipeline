@@ -91,8 +91,8 @@ def process_frame(msg: dict, ch, method):
 
         frame_h, frame_w = full_frame.shape[:2]
 
-        # Run YOLO + BoT-SORT on full frame
-        detections = track_full_frame(full_frame, video_fps)
+        # Run YOLO + Norfair on full frame
+        detections = track_full_frame(full_frame, video_fps, frame_index)
 
         for det in detections:
             track_id = det["track_id"]
