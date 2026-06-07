@@ -45,22 +45,44 @@ function fmtTime(iso) {
 
 // ── Snapshot image with fallback ──────────────────────────────────────────────
 function SnapshotImg({ path, alt = 'snapshot' }) {
+  const [blobUrl, setBlobUrl] = useState(null)
   const [errored, setErrored] = useState(false)
-  const src = api.snapshotUrl(path)
 
-  if (!src || errored) {
+  useEffect(() => {
+    if (!path) return
+    let url = null
+    const token = localStorage.getItem('sentinel_token')
+    fetch(`/api/snapshots/${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(res.status)
+        return res.blob()
+      })
+      .then((blob) => {
+        url = URL.createObjectURL(blob)
+        setBlobUrl(url)
+      })
+      .catch(() => setErrored(true))
+
+    return () => { if (url) URL.revokeObjectURL(url) }
+  }, [path])
+
+  if (!path || errored) {
     return (
       <div className="w-full h-full flex items-center justify-center bg-slate-700/60 text-slate-500 text-3xl">
         🖼️
       </div>
     )
   }
+  if (!blobUrl) {
+    return <div className="w-full h-full bg-slate-700/60 animate-pulse" />
+  }
   return (
     <img
-      src={src}
+      src={blobUrl}
       alt={alt}
       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-      onError={() => setErrored(true)}
     />
   )
 }
