@@ -57,8 +57,8 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
             )
 
     frame_index = 0
-    # Track motion boxes per frame index for debug annotation
     motion_boxes_this_frame: list[dict] = []
+    last_known_boxes: list[dict] = []  # carried forward to skipped frames in debug video
 
     try:
         while True:
@@ -116,23 +116,27 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                         crops_b64=crops_b64,
                     ))
                     motion_boxes_this_frame = boxes
+                    last_known_boxes = boxes
 
             # Write debug frame at scaled resolution — fast encode, low NFS I/O
             if debug_writer is not None:
-                # Ensure we have the small frame even for skipped frames
                 dbg_frame = small if not skip else cv2.resize(
                     frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
-                if motion_boxes_this_frame:
+
+                # Green = detected this frame, Yellow = carried forward from last detection
+                draw_boxes = motion_boxes_this_frame or (last_known_boxes if skip else [])
+                color = (0, 255, 0) if motion_boxes_this_frame else (0, 255, 255)
+
+                if draw_boxes:
                     annotated = dbg_frame.copy()
-                    for box in motion_boxes_this_frame:
-                        # Scale original-res box back down to debug frame coords
+                    for box in draw_boxes:
                         sx = int(box["x"] * scale)
                         sy = int(box["y"] * scale)
                         sw = int(box["w"] * scale)
                         sh = int(box["h"] * scale)
-                        cv2.rectangle(annotated, (sx, sy), (sx + sw, sy + sh), (0, 255, 0), 2)
+                        cv2.rectangle(annotated, (sx, sy), (sx + sw, sy + sh), color, 2)
                         cv2.putText(annotated, f"f{frame_index}", (sx, max(sy - 4, 10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                     debug_writer.write(annotated)
                 else:
                     debug_writer.write(dbg_frame)

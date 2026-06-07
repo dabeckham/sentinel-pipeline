@@ -29,7 +29,12 @@ _trackers: dict[int, sv.ByteTrack] = {}
 
 def get_tracker(job_id: int) -> sv.ByteTrack:
     if job_id not in _trackers:
-        _trackers[job_id] = sv.ByteTrack()
+        s = get_settings()
+        _trackers[job_id] = sv.ByteTrack(
+            minimum_matching_threshold=s.bytetrack_match_threshold,
+            lost_track_buffer=s.bytetrack_lost_buffer,
+            minimum_consecutive_frames=s.bytetrack_min_hits,
+        )
     return _trackers[job_id]
 
 

@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
+    # ByteTrack tuning — defaults suit frame_skip=2 at ~30fps cameras
+    # Lower match threshold handles larger inter-frame jumps from skipped frames
+    bytetrack_match_threshold: float = 0.3
+    # Buffer in frames — how long to hold a lost track before killing it
+    # Set high enough to survive motion_frame_skip gaps (frame_skip+1) * fps
+    bytetrack_lost_buffer: int = 90
+    # Minimum consecutive frames before a track is confirmed
+    bytetrack_min_hits: int = 1
+
     def rabbitmq_params(self):
         import pika
         return pika.ConnectionParameters(
