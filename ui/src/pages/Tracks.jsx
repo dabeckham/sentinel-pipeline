@@ -217,56 +217,55 @@ function TrackDrawer({ trackId, onClose }) {
           )}
 
           {!loading && detail && (
-            <div className="p-5 space-y-5">
-              {/* Snapshot */}
-              <div className="rounded-lg overflow-hidden border border-slate-700 aspect-video bg-slate-800">
-                <SnapshotImg
-                  path={detail.snapshot_path}
-                  className="w-full h-full object-contain"
-                />
+            <div className="flex flex-col">
+              {/* Snapshot — fixed height thumbnail, not a hero */}
+              <div className="relative w-full bg-slate-800 border-b border-slate-700 shrink-0" style={{ height: '200px' }}>
+                <SnapshotImg path={detail.snapshot_path} />
               </div>
 
-              {/* Metadata grid */}
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { label: 'Class', value: <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${classColor(detail.class_label)}`}>{detail.class_label ?? '—'}</span> },
-                  { label: 'Confidence', value: fmtConfidence(detail.confidence_max) },
-                  { label: 'Camera', value: detail.camera_name ?? '—' },
-                  { label: 'Detections', value: detail.detection_count ?? detail.detections?.length ?? '—' },
-                  { label: 'Started', value: startTime ?? '—' },
-                  { label: 'Ended', value: endTime ?? '—' },
-                  { label: 'Duration', value: duration ?? '—' },
-                  { label: 'Frames', value: detail.first_frame != null ? `${detail.first_frame}–${detail.last_frame}` : '—' },
-                ].map(({ label, value }) => (
-                  <div key={label} className="bg-slate-800 rounded-lg px-3 py-2.5 border border-slate-700">
-                    <p className="text-slate-500 text-xs mb-1">{label}</p>
-                    <div className="text-slate-200 text-sm font-medium">{value}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Detections timeline */}
-              {detail.detections?.length > 0 && (
-                <div>
-                  <h4 className="text-slate-300 text-sm font-medium mb-2">
-                    Detections <span className="text-slate-500 font-normal">({detail.detections.length})</span>
-                  </h4>
-                  <div className="space-y-1 max-h-64 overflow-y-auto rounded-lg border border-slate-700 divide-y divide-slate-700/50">
-                    {detail.detections.map((d) => (
-                      <div key={d.id} className="flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-800 transition-colors">
-                        <span className="text-slate-500 font-mono">frame {d.frame_index}</span>
-                        <span className="text-slate-300 capitalize">{d.class_label ?? '—'}</span>
-                        <span className="text-slate-400 font-mono">{fmtConfidence(d.confidence)}</span>
-                        {d.bbox && (
-                          <span className="text-slate-600 font-mono text-xs hidden sm:block">
-                            {d.bbox.x},{d.bbox.y} {d.bbox.w}×{d.bbox.h}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+              <div className="p-5 space-y-5">
+                {/* Metadata grid — first thing visible after thumbnail */}
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: 'Class',       value: <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${classColor(detail.class_label)}`}>{detail.class_label ?? '—'}</span> },
+                    { label: 'Confidence',  value: fmtConfidence(detail.confidence_max) },
+                    { label: 'Camera',      value: detail.camera_name ?? '—' },
+                    { label: 'Detections',  value: detail.detection_count ?? detail.detections?.length ?? '—' },
+                    { label: 'Started',     value: startTime ?? '—' },
+                    { label: 'Ended',       value: endTime ?? '—' },
+                    { label: 'Duration',    value: duration ?? '—' },
+                    { label: 'Frames',      value: detail.first_frame != null ? `${detail.first_frame} – ${detail.last_frame}` : '—' },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="bg-slate-800/60 rounded-lg px-3 py-2.5 border border-slate-700">
+                      <p className="text-slate-500 text-xs mb-1">{label}</p>
+                      <div className="text-slate-200 text-sm font-medium">{value}</div>
+                    </div>
+                  ))}
                 </div>
-              )}
+
+                {/* Detections timeline */}
+                {detail.detections?.length > 0 && (
+                  <div>
+                    <h4 className="text-slate-300 text-sm font-medium mb-2">
+                      Detections <span className="text-slate-500 font-normal">({detail.detections.length})</span>
+                    </h4>
+                    <div className="rounded-lg border border-slate-700 divide-y divide-slate-700/50 overflow-hidden">
+                      {detail.detections.map((d) => (
+                        <div key={d.id} className="flex items-center gap-3 px-3 py-2 text-xs hover:bg-slate-800/60 transition-colors">
+                          <span className="text-slate-500 font-mono w-16 shrink-0">f {d.frame_index}</span>
+                          <span className="text-slate-300 capitalize flex-1">{d.class_label ?? '—'}</span>
+                          <span className="text-brand font-mono">{fmtConfidence(d.confidence)}</span>
+                          {d.bbox && (
+                            <span className="text-slate-600 font-mono hidden sm:block">
+                              {d.bbox.w}×{d.bbox.h}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
