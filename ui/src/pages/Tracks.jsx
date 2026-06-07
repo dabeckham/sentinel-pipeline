@@ -183,8 +183,9 @@ function TrackDrawer({ trackId, onClose }) {
         onClick={onClose}
       />
 
-      {/* Drawer */}
-      <div className="fixed right-0 top-0 h-full w-full max-w-lg bg-slate-900 border-l border-slate-700 z-50 flex flex-col shadow-2xl overflow-hidden">
+      {/* Modal */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+      <div className="pointer-events-auto w-full max-w-lg max-h-[90vh] bg-slate-900 border border-slate-700 rounded-2xl flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-700 shrink-0">
           <div>
@@ -269,6 +270,7 @@ function TrackDrawer({ trackId, onClose }) {
             </div>
           )}
         </div>
+      </div>
       </div>
     </>
   )
