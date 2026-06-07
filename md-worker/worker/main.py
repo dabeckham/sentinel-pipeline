@@ -7,7 +7,7 @@ import pika
 import structlog
 import setproctitle
 import cv2
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from worker.config import get_settings
@@ -46,7 +46,7 @@ def _parse_filename(video_path: str) -> tuple[str | None, datetime | None]:
         return None, None
     camera_name = m.group(1).replace('_', ' ')
     try:
-        recorded_at = datetime.strptime(m.group(2), '%Y%m%d%H%M%S')
+        recorded_at = datetime.strptime(m.group(2), '%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
     except ValueError:
         return camera_name, None
     return camera_name, recorded_at

@@ -34,9 +34,12 @@ function fmtDuration(started, ended) {
 }
 function fmtTime(iso) {
   if (!iso) return null
+  // Display as UTC so the timestamp matches the camera's local clock
+  // (filename timestamps are stored as-is, no timezone conversion)
   return new Date(iso).toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZone: 'UTC',
   })
 }
 function toDateStr(d) {
