@@ -117,7 +117,7 @@ def _handle_message(body: bytes):
                     # Update wall-clock end time with each new latest frame
                     if osd_recorded_at:
                         track.ended_at = osd_recorded_at + timedelta(milliseconds=timestamp_ms)
-            if snapshot_path and track.snapshot_path is None:
+            if snapshot_path:
                 track.snapshot_path = snapshot_path
 
             db.add(Detection(
