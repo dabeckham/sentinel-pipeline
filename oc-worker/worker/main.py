@@ -112,7 +112,8 @@ def process_frame(msg: dict, ch, method):
             # Best-shot: overwrite _best.jpg when this frame is more vertically centered
             bbox_cy = bbox["y"] + bbox["h"] / 2
             score   = abs(bbox_cy / frame_h - 0.5)
-            if score < _best_shot_score.get(key, 1.0):
+            is_best = score < _best_shot_score.get(key, 1.0)
+            if is_best:
                 _best_shot_score[key] = score
                 try:
                     upload_snapshot(settings.minio_bucket_snapshots, best_name, full_frame)
@@ -131,6 +132,9 @@ def process_frame(msg: dict, ch, method):
                     "confidence":   det["confidence"],
                     "bbox":         bbox,
                     "snapshot_path": best_name,
+                    # snapshot_bbox: only set when this is the new best-shot frame
+                    # so the track stores the bbox that matches the thumbnail
+                    "snapshot_bbox": bbox if is_best else None,
                     "crop_path":    det_crop_path,
                     "is_final":     False,
                     "osd_camera_name": osd_camera_name,

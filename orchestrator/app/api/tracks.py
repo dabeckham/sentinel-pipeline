@@ -57,24 +57,11 @@ def list_tracks(
         .subquery()
     )
 
-    # Subquery: bbox of the first detection per track (for thumbnail auto-zoom)
-    first_det_sq = (
-        select(
-            Detection.track_id,
-            Detection.bbox,
-        )
-        .distinct(Detection.track_id)
-        .order_by(Detection.track_id, Detection.frame_index)
-        .subquery()
-    )
-
     q = (
         db.query(Track, Job.camera_name,
-                 func.coalesce(det_count_sq.c.cnt, 0).label("detection_count"),
-                 first_det_sq.c.bbox.label("snapshot_bbox"))
+                 func.coalesce(det_count_sq.c.cnt, 0).label("detection_count"))
         .join(Job, Job.id == Track.job_id)
         .outerjoin(det_count_sq, det_count_sq.c.track_id == Track.id)
-        .outerjoin(first_det_sq, first_det_sq.c.track_id == Track.id)
     )
 
     if job_id:
@@ -99,7 +86,7 @@ def list_tracks(
 
     rows = q.order_by(order).offset((page - 1) * page_size).limit(page_size).all()
 
-    items = [_track_to_response(t, cam, cnt, bbox) for t, cam, cnt, bbox in rows]
+    items = [_track_to_response(t, cam, cnt, t.snapshot_bbox) for t, cam, cnt in rows]
     return TrackListResponse(items=items, total=total, page=page, page_size=page_size)
 
 
