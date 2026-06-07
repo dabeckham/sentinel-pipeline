@@ -39,6 +39,9 @@ export const api = {
     const qs = new URLSearchParams(params).toString()
     return req('GET', `/tracks${qs ? '?' + qs : ''}`)
   },
+  track: (id) => req('GET', `/tracks/${id}`),
+  cameras: () => req('GET', '/tracks/cameras'),
+  snapshotUrl: (path) => path ? `/api/snapshots/${path}` : null,
   users: () => req('GET', '/users'),
   updateUser: (id, data) => req('PATCH', `/users/${id}`, data),
   createUser: (data) => req('POST', '/users', data),
