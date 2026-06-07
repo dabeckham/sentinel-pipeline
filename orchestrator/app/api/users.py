@@ -26,7 +26,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), _: User = De
         raise HTTPException(status_code=422, detail=f"Invalid role: {payload.role}")
     user = User(
         username=payload.username,
-        email=payload.email,
+        email=payload.email or None,   # normalize "" → None so UNIQUE constraint works
         password_hash=hash_password(payload.password),
         role=role,
     )
@@ -50,7 +50,7 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if payload.email is not None:
-        user.email = payload.email
+        user.email = payload.email or None  # normalize "" → None
     if payload.role is not None:
         try:
             user.role = UserRole(payload.role)
