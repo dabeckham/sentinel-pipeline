@@ -44,7 +44,7 @@ function fmtTime(iso) {
 }
 
 // ── Snapshot image with fallback ──────────────────────────────────────────────
-function SnapshotImg({ path, alt = 'snapshot', style = {} }) {
+function SnapshotImg({ path, alt = 'snapshot', style = {}, onNaturalSize }) {
   const [blobUrl, setBlobUrl] = useState(null)
   const [errored, setErrored] = useState(false)
   const currentUrlRef = useRef(null)
@@ -92,6 +92,7 @@ function SnapshotImg({ path, alt = 'snapshot', style = {} }) {
     <img
       src={blobUrl}
       alt={alt}
+      onLoad={(e) => onNaturalSize?.({ w: e.target.naturalWidth, h: e.target.naturalHeight })}
       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', ...style }}
     />
   )
@@ -209,14 +210,42 @@ function TrackDrawer({ trackId, onClose }) {
   // Zoom / pan state
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [imgSize, setImgSize] = useState(null)   // { w, h } natural image dimensions
   const dragRef = useRef(null)
   const viewerRef = useRef(null)
 
-  // Reset zoom+pan on frame change
-  useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [detIdx])
+  // Auto-zoom to bbox when detection changes (if bbox available + image size known)
+  useEffect(() => {
+    const bbox = curDet?.bbox
+    const viewer = viewerRef.current
+    if (!bbox || !imgSize || !viewer) {
+      setZoom(1); setPan({ x: 0, y: 0 }); return
+    }
+    const vw = viewer.clientWidth
+    const vh = viewer.clientHeight
+
+    // Scale factor: image is letterboxed (objectFit:contain) inside viewer
+    const scaleX = vw / imgSize.w
+    const scaleY = vh / imgSize.h
+    const fitScale = Math.min(scaleX, scaleY)      // actual px-per-img-px on screen
+
+    // Bbox centre in viewer coords (relative to viewer centre)
+    const bboxCx = (bbox.x + bbox.w / 2) * fitScale - vw / 2
+    const bboxCy = (bbox.y + bbox.h / 2) * fitScale - vh / 2
+
+    // Zoom so bbox fills ~60% of the viewer (with padding)
+    const targetZoom = Math.min(8, Math.max(1.5,
+      Math.min(vw * 0.6 / (bbox.w * fitScale), vh * 0.6 / (bbox.h * fitScale))
+    ))
+
+    setZoom(targetZoom)
+    // Translate to centre bbox: negate because we move image opposite to bbox offset
+    setPan({ x: -bboxCx * targetZoom / 1, y: -bboxCy * targetZoom / 1 })
+  }, [detIdx, imgSize])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
+    e.stopPropagation()
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
     setZoom((z) => {
       const next = Math.min(8, Math.max(1, z * factor))
@@ -225,12 +254,13 @@ function TrackDrawer({ trackId, onClose }) {
     })
   }, [])
 
-  // Attach wheel as non-passive so preventDefault works
+  // Attach wheel as non-passive so preventDefault works — must use addEventListener
+  // because React synthetic onWheel is passive by default and can't prevent scroll
   useEffect(() => {
     const el = viewerRef.current
     if (!el) return
-    el.addEventListener('wheel', handleWheel, { passive: false })
-    return () => el.removeEventListener('wheel', handleWheel)
+    el.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+    return () => el.removeEventListener('wheel', handleWheel, { capture: true })
   }, [handleWheel])
 
   const handleMouseDown = (e) => {
@@ -311,7 +341,7 @@ function TrackDrawer({ trackId, onClose }) {
                   transition: dragRef.current ? 'none' : 'transform 0.15s ease',
                   willChange: 'transform',
                 }}>
-                  <SnapshotImg path={currentSnapshotPath} />
+                  <SnapshotImg path={currentSnapshotPath} onNaturalSize={setImgSize} />
                 </div>
 
                 {/* Frame counter overlay */}
