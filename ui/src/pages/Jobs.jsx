@@ -57,11 +57,14 @@ export default function Jobs() {
   // job_id → timestamp (ms) when it entered its current status
   const [statusSince, setStatusSince]   = useState({})
   const prevStatusRef = useRef({})  // job_id → last known status (for change detection)
-  const pollRef = useRef(null)
+  const pollRef  = useRef(null)
+  const loadRef  = useRef(null)   // always points to latest load fn
+  const dataRef  = useRef(null)   // always points to latest data
 
   const load = useCallback(async () => {
     try {
       const res = await api.jobs(page, PAGE_SIZE, statusFilter)
+      dataRef.current = res
       setData(res)
 
       // Track status-change timestamps
@@ -70,10 +73,8 @@ export default function Jobs() {
         for (const job of res.items) {
           const lastStatus = prevStatusRef.current[job.id]
           if (lastStatus === undefined) {
-            // First time seeing this job — use created_at as baseline
             if (!(job.id in next)) next[job.id] = new Date(job.created_at).getTime()
           } else if (lastStatus !== job.status) {
-            // Status changed between polls — reset timer
             next[job.id] = Date.now()
           }
           prevStatusRef.current[job.id] = job.status
@@ -85,13 +86,16 @@ export default function Jobs() {
     }
   }, [page, statusFilter])
 
-  // Poll at 2s when there are active jobs, 8s otherwise
+  // Keep ref current so the poll interval always calls the latest version
+  loadRef.current = load
+
+  // Polling — 2s when active jobs exist, 8s when idle. Uses refs so interval never goes stale.
   useEffect(() => {
-    load()
+    loadRef.current()
     const tick = () => {
-      const hasActive = data?.items?.some((j) => ACTIVE_STATUSES.has(j.status))
+      const hasActive = dataRef.current?.items?.some((j) => ACTIVE_STATUSES.has(j.status))
       pollRef.current = setTimeout(async () => {
-        await load()
+        await loadRef.current()
         tick()
       }, hasActive ? 2000 : 8000)
     }
@@ -99,8 +103,8 @@ export default function Jobs() {
     return () => clearTimeout(pollRef.current)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reload on filter/page change
-  useEffect(() => { load() }, [page, statusFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Reload immediately on filter/page change
+  useEffect(() => { loadRef.current() }, [page, statusFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 1
   const hasActive  = data?.items?.some((j) => ACTIVE_STATUSES.has(j.status))
