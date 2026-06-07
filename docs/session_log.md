@@ -27,7 +27,7 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 ## Current Status — ALL 5 PHASES COMPLETE ✅ + Post-Launch Tuning
 
 **Orchestrator version: 0.5.0**  
-**Last commit: `0fe7756`** — Frigate-style Tracked Objects UI (2026-06-07)  
+**Last commit: `2233aaf`** — Per-detection snapshots + frame-by-frame playback (2026-06-07)  
 **Alembic migration: 0002** (camera_name, recorded_at, started_at, ended_at columns added)  
 **12 original GitHub issues closed. Issue #17 (Frigate UI) implemented.**
 
@@ -161,6 +161,7 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-06 | 5 | Power outage recovery. 12-video smoke test (95 tracks, 1310 detections). GitHub issues #1-12 created. Discord webhooks set up. Memory files created |
 | 2026-06-06 | 6 | Phase 3 (Auth/API) complete. Fixed bcrypt/passlib. Admin seeded. All endpoints verified. Phase 4 (UI) built and deployed. Phase 5 (recovery) built and deployed. All 12 issues closed. Deployment + DR docs updated. Fixed nginx 502 (stale DNS + path doubling) |
 | 2026-06-07 | 7 | Post-launch tuning. Issues #13-16: in-memory crops, debug video, watcher loop fix, MOG2 scale. Docker Hub v0.5.0 push. Track fragmentation fix (bbox merging). Ghost track fix (lost_buffer 90→10). YOLO class filter (vehicles/person/animals only). Confidence 0.45→0.85. OSD OCR (pytesseract first-frame timestamp + camera name, alembic migration 0002). Frigate-style Tracked Objects UI (#17): card grid, filters, detail drawer, snapshot proxy. Fixed SSH — was using wrong username `don`, should be `dabeckham`. |
+| 2026-06-07 | 8 | Tracked Objects UI polish. Fixed snapshot images not loading (JWT auth — `<img>` can't send headers; switched to fetch+blob URL). Fixed snapshot not filling tile (absolute inset-0 + fixed-height container). Converted side drawer to centered floating modal. Per-detection snapshot storage in oc-worker (`track_{id}_f{frame}.jpg`). Frame-by-frame playback in modal: play/pause, step back/forward, scrubber, frame counter overlay, clickable detection list rows. |
 
 ---
 
@@ -183,6 +184,26 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 6. **CUDA_VISIBLE_DEVICES must be "0" inside container** — Docker remaps physical GPU 1 → container GPU 0
 7. **nginx proxy_pass + variable = path doubling** — use `proxy_pass http://$var:8000;` (no path) + `resolver 127.0.0.11 valid=10s`
 8. **NFS remounted rw** — required for md-worker debug video; docker-compose.yml has `/ingest:rw`
+
+## Snapshot Storage Layout (MinIO `snapshots` bucket)
+
+| Path | Purpose |
+|---|---|
+| `{job_id}/track_{track_id:06d}.jpg` | Track thumbnail — first detection, used on card grid |
+| `{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg` | Per-detection crop — used for playback in modal |
+
+Served via `GET /api/snapshots/{path}` — orchestrator proxies from MinIO with JWT auth.  
+Frontend fetches with `Authorization: Bearer` header, converts to blob URL (plain `<img src>` can't carry JWT).
+
+## Tracked Objects UI Summary
+
+- **Card grid** — responsive 2–6 col, thumbnail fills tile, class badge + confidence overlay, camera name, timestamp, duration, detection count, confidence bar
+- **Filters** — camera (dynamic from DB), class label, sort order (newest/oldest/confidence/class)
+- **Modal on click** — centered floating, blurred backdrop, Escape to close
+  - 220px image viewer with per-detection crops
+  - Play/pause (250ms/frame), step back/forward, scrubber, frame counter
+  - Metadata grid: class, confidence, camera, detections, started, ended, duration, frames
+  - Detection list — clickable rows jump to that frame, active row highlighted
 
 ## What's Next
 
