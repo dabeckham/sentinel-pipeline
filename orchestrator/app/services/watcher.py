@@ -85,6 +85,22 @@ class IngestHandler(FileSystemEventHandler):
             })
             log.info("ingest_job_queued", job_id=job.id, path=path)
 
+            # Broadcast to WebSocket clients
+            try:
+                import asyncio
+                from app.api.ws import broadcast
+                event = {
+                    "type": "job_update",
+                    "job_id": job.id,
+                    "status": "queued",
+                    "file_path": path,
+                }
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.run_coroutine_threadsafe(broadcast(event), loop)
+            except Exception:
+                pass
+
         except Exception:
             log.exception("ingest_process_error", path=path)
             db.rollback()
