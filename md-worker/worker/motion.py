@@ -7,6 +7,43 @@ import numpy as np
 from worker.config import get_settings
 
 
+def _merge_boxes(boxes: list[tuple], merge_dist: int) -> list[tuple]:
+    """
+    Greedily merge (sx, sy, sw, sh) boxes that are within merge_dist pixels
+    of each other. Repeat until no further merges are possible.
+    Produces one stable whole-object bbox per cluster of motion regions.
+    """
+    if not boxes:
+        return []
+    boxes = list(boxes)
+    changed = True
+    while changed:
+        changed = False
+        merged = []
+        used = [False] * len(boxes)
+        for i in range(len(boxes)):
+            if used[i]:
+                continue
+            x1, y1, w1, h1 = boxes[i]
+            for j in range(i + 1, len(boxes)):
+                if used[j]:
+                    continue
+                x2, y2, w2, h2 = boxes[j]
+                # Check if bboxes are within merge_dist of each other
+                if (x1 - merge_dist < x2 + w2 and x1 + w1 + merge_dist > x2 and
+                        y1 - merge_dist < y2 + h2 and y1 + h1 + merge_dist > y2):
+                    nx = min(x1, x2)
+                    ny = min(y1, y2)
+                    x1, y1 = nx, ny
+                    w1 = max(x1 + w1, x2 + w2) - nx
+                    h1 = max(y1 + h1, y2 + h2) - ny
+                    used[j] = True
+                    changed = True
+            merged.append((x1, y1, w1, h1))
+        boxes = merged
+    return boxes
+
+
 @dataclass
 class MotionFrame:
     frame_index: int
@@ -77,32 +114,31 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                 fgmask = fgbg.apply(small)
                 _, fgmask = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
 
-                # Dilate to merge nearby motion blobs from the same moving object
-                # into one stable bbox — critical for ByteTrack IoU matching.
-                if s.motion_dilate_px > 0:
-                    kernel = cv2.getStructuringElement(
-                        cv2.MORPH_ELLIPSE, (s.motion_dilate_px, s.motion_dilate_px))
-                    fgmask = cv2.dilate(fgmask, kernel, iterations=1)
-
                 contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                boxes = []
-                crops_b64 = []
-
+                # Collect raw bboxes in scaled-frame coordinates, filter tiny noise
+                raw_boxes = []
                 for cnt in contours:
                     if cv2.contourArea(cnt) < s.motion_min_contour_area:
                         continue
+                    raw_boxes.append(cv2.boundingRect(cnt))  # (sx, sy, sw, sh)
 
-                    sx, sy, sw, sh = cv2.boundingRect(cnt)
+                # Merge nearby boxes into whole-object bboxes so ByteTrack gets
+                # a stable position to match across frames
+                merged_scaled = _merge_boxes(raw_boxes, s.motion_merge_dist)
 
-                    # Scale bbox back to original resolution
+                boxes = []
+                crops_b64 = []
+                fh, fw = frame.shape[:2]
+
+                for sx, sy, sw, sh in merged_scaled:
+                    # Scale back to original resolution
                     x = int(sx * inv)
                     y = int(sy * inv)
                     w = int(sw * inv)
                     h = int(sh * inv)
 
                     # Clamp to frame bounds
-                    fh, fw = frame.shape[:2]
                     x, y = max(0, x), max(0, y)
                     w, h = min(w, fw - x), min(h, fh - y)
                     if w < 4 or h < 4:
