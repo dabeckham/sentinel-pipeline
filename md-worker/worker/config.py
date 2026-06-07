@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     mog2_history: int = 500
     mog2_var_threshold: float = 16.0
     mog2_detect_shadows: bool = True
-    motion_min_contour_area: int = 500
+    motion_min_contour_area: int = 2000
     motion_frame_skip: int = 2
     # Resize factor applied before MOG2 — bboxes are scaled back to original res for cropping
     # 0.25 = 640×360 from 2560×1440 (16× fewer pixels, ~8-10× faster MOG2)
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Merges nearby motion blobs from the same object into a single stable bbox,
     # which is critical for ByteTrack IoU matching to work across frames.
     # Value is in scaled-frame pixels (at motion_scale=0.25, 20px here = 80px original).
-    motion_dilate_px: int = 20
+    motion_dilate_px: int = 10
 
     # Debug video (issue #14) — set MD_DEBUG_VIDEO=true to enable
     md_debug_video: bool = False
