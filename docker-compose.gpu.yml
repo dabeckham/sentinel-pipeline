@@ -15,6 +15,8 @@ services:
       OC_USE_GPU: "true"
       CUDA_VISIBLE_DEVICES: "0"
       YOLO_MODEL: ${YOLO_MODEL:-yolo26s}
+    volumes:
+      - yolo-models:/root/.config/Ultralytics
     deploy:
       resources:
         reservations:
@@ -27,3 +29,8 @@ networks:
   sentinel-net:
     external: true
     name: sentinel-pipeline_sentinel-net
+
+volumes:
+  yolo-models:
+    external: true
+    name: sentinel-pipeline_yolo-models

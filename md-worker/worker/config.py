@@ -18,18 +18,18 @@ class Settings(BaseSettings):
     # minio_bucket_crops removed — crops now travel in-memory via RabbitMQ (issue #13)
 
     mog2_history: int = 500
-    mog2_var_threshold: float = 16.0
-    mog2_detect_shadows: bool = True
-    motion_min_contour_area: int = 500
+    mog2_var_threshold: float = 25.0   # raised 16→25: less sensitive, fewer false positives
+    mog2_detect_shadows: bool = False   # shadows=False: avoids grey-pixel bleed expanding boxes
+    motion_min_contour_area: int = 800  # raised 500→800: filter small noise/leaves/birds
     motion_frame_skip: int = 2
     # Resize factor applied before MOG2 — bboxes are scaled back to original res for cropping
     # 0.25 = 640×360 from 2560×1440 (16× fewer pixels, ~8-10× faster MOG2)
     motion_scale: float = 0.25
     # Merge nearby bboxes into whole-object bboxes after contour finding.
     # Boxes within this many scaled-frame pixels of each other are merged.
-    # At scale=0.25, 30px here = 120px in original resolution.
-    # This gives ByteTrack a stable whole-object bbox to match across frames.
-    motion_merge_dist: int = 30
+    # At scale=0.25: 60px here = 240px in original resolution.
+    # Large vehicles can fragment into hood/roof/trunk contours — 60 scaled px merges them.
+    motion_merge_dist: int = 60
 
     # Debug video (issue #14) — set MD_DEBUG_VIDEO=true to enable
     md_debug_video: bool = False

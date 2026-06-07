@@ -168,6 +168,8 @@ services:
       MINIO_ENDPOINT: minio:9000
       WORKER_TYPE: oc
       OC_USE_GPU: "false"
+    volumes:
+      - yolo-models:/root/.config/Ultralytics
     networks:
       - sentinel-net
 
@@ -196,3 +198,4 @@ volumes:
   rabbitmq-data:
   postgres-data:
   minio-data:
+  yolo-models:    # cache YOLO model weights — survives image rebuilds
