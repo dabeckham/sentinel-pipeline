@@ -20,6 +20,8 @@ RUN ln -sf /usr/bin/python3 /usr/bin/python
 COPY requirements.gpu.txt .
 RUN pip install --no-cache-dir -r requirements.gpu.txt
 
+# Build arg to invalidate cache and force re-copy of application code
+ARG CACHEBUST=1
 COPY . .
 
 CMD ["python", "-m", "worker.main"]
