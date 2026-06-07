@@ -127,13 +127,23 @@ def _handle_message(body: bytes):
 
     job_id = msg.get("job_id")
 
-    # MD worker status ping — just update job status and broadcast
+    # MD worker status ping — update job status and stamp timestamps
     if msg.get("md_status"):
         db = SessionLocal()
         try:
             job = db.query(Job).filter_by(id=job_id).first()
-            if job and job.status == JobStatus.queued:
+            if not job:
+                return
+            new_status = None
+            if msg["md_status"] == "md_processing" and job.status == JobStatus.queued:
                 job.status = JobStatus.md_processing
+                job.md_started_at = datetime.now(timezone.utc)
+                new_status = "md_processing"
+            elif msg["md_status"] == "md_complete" and job.status == JobStatus.md_processing:
+                job.status = JobStatus.md_complete
+                job.md_completed_at = datetime.now(timezone.utc)
+                new_status = "md_complete"
+            if new_status:
                 db.commit()
                 try:
                     from app.api.ws import broadcast
@@ -142,7 +152,7 @@ def _handle_message(body: bytes):
                     if loop is not None:
                         import asyncio
                         asyncio.run_coroutine_threadsafe(
-                            broadcast({"type": "job_update", "job_id": job_id, "status": "md_processing"}),
+                            broadcast({"type": "job_update", "job_id": job_id, "status": new_status}),
                             loop,
                         )
                 except Exception:
@@ -181,8 +191,9 @@ def _handle_message(body: bytes):
             log.error("oc_result_unknown_job", job_id=job_id)
             return
 
-        if job.status in (JobStatus.queued, JobStatus.md_processing):
+        if job.status in (JobStatus.queued, JobStatus.md_processing, JobStatus.md_complete):
             job.status = JobStatus.oc_processing
+            job.oc_started_at = datetime.now(timezone.utc)
 
         # Save OSD metadata to job on first result that carries it
         if osd_camera_name and job.camera_name is None:

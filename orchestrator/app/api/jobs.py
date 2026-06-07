@@ -27,6 +27,9 @@ def _job_to_response(job: Job, track_count: int | None = None) -> JobResponse:
         camera_name=job.camera_name,
         recorded_at=job.recorded_at,
         created_at=job.created_at,
+        md_started_at=job.md_started_at,
+        md_completed_at=job.md_completed_at,
+        oc_started_at=job.oc_started_at,
         completed_at=job.completed_at,
         error_message=job.error_message,
         track_count=track_count,
@@ -81,6 +84,8 @@ def cancel_job(
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status in (JobStatus.completed, JobStatus.failed, JobStatus.duplicate):
         raise HTTPException(status_code=400, detail=f"Job is already {job.status} — cannot cancel")
+    if job.status == JobStatus.md_complete:
+        pass  # cancellable — MD done but OC not started yet
     job.status = JobStatus.failed
     job.error_message = f"Cancelled by {current_user.username}"
     job.completed_at = datetime.now(timezone.utc)
