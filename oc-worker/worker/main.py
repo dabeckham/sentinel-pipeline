@@ -15,8 +15,9 @@ from worker.minio_client import upload_snapshot
 
 log = structlog.get_logger()
 
-# Track which tracks we've already uploaded a snapshot for
-_snapshot_uploaded: dict[tuple[int, int], bool] = {}
+# Best-shot tracking: (job_id, track_id) → best score seen so far (lower = better)
+# Score = abs(bbox_center_y / frame_height - 0.5): 0.0 means perfectly centered vertically
+_best_shot_score: dict[tuple[int, int], float] = {}
 
 
 def _connect(settings) -> tuple[pika.BlockingConnection, any]:
@@ -113,14 +114,18 @@ def process_frame(msg: dict, ch, method):
 
         detections = track_frame(job_id, valid_bboxes, crops)
 
+        frame_height = full_frame.shape[0] if full_frame is not None else 0
+
         for det in detections:
             track_id = det["track_id"]
             crop_idx = det["crop_idx"]
-            track_snapshot_path = None
+            bbox = det["bbox"]
             det_crop_path = None
+            track_snapshot_path = None
 
-            # Per-detection snapshot — full original frame (crop used only for OC classification)
             snapshot_img = full_frame if full_frame is not None else crops[crop_idx]
+
+            # Per-detection full-frame snapshot — kept for playback; tagged _f{frame} for future cleanup
             det_name = f"{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg"
             try:
                 upload_snapshot(settings.minio_bucket_snapshots, det_name, snapshot_img)
@@ -128,16 +133,29 @@ def process_frame(msg: dict, ch, method):
             except Exception:
                 log.exception("oc_det_snapshot_error", job_id=job_id, track_id=track_id, frame=frame_index)
 
-            # Track thumbnail — first detection only, used as the card thumbnail
+            # Best-shot: frame where bbox vertical center is closest to frame vertical center.
+            # Overwrites _best.jpg whenever a better frame is found.
             key = (job_id, track_id)
-            if key not in _snapshot_uploaded:
-                _snapshot_uploaded[key] = True
-                track_snap_name = f"{job_id}/track_{track_id:06d}.jpg"
-                try:
-                    upload_snapshot(settings.minio_bucket_snapshots, track_snap_name, snapshot_img)
-                    track_snapshot_path = track_snap_name
-                except Exception:
-                    log.exception("oc_snapshot_upload_error", job_id=job_id, track_id=track_id)
+            best_name = f"{job_id}/track_{track_id:06d}_best.jpg"
+            track_snapshot_path = best_name  # always reference _best.jpg in DB
+
+            if frame_height > 0:
+                bbox_cy = bbox["y"] + bbox["h"] / 2
+                score = abs(bbox_cy / frame_height - 0.5)
+                if score < _best_shot_score.get(key, 1.0):
+                    _best_shot_score[key] = score
+                    try:
+                        upload_snapshot(settings.minio_bucket_snapshots, best_name, snapshot_img)
+                    except Exception:
+                        log.exception("oc_best_shot_upload_error", job_id=job_id, track_id=track_id)
+            else:
+                # No frame height — upload on first detection only
+                if key not in _best_shot_score:
+                    _best_shot_score[key] = 1.0
+                    try:
+                        upload_snapshot(settings.minio_bucket_snapshots, best_name, snapshot_img)
+                    except Exception:
+                        log.exception("oc_best_shot_upload_error", job_id=job_id, track_id=track_id)
 
             ch.basic_publish(
                 exchange="",
@@ -172,10 +190,9 @@ def process_frame(msg: dict, ch, method):
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
             )
             release_tracker(job_id)
-            # Clean up snapshot tracking for this job
-            keys_to_del = [k for k in _snapshot_uploaded if k[0] == job_id]
+            keys_to_del = [k for k in _best_shot_score if k[0] == job_id]
             for k in keys_to_del:
-                del _snapshot_uploaded[k]
+                del _best_shot_score[k]
 
         log.info("oc_frame_processed",
                  job_id=job_id, frame_index=frame_index,

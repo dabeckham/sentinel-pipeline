@@ -1,14 +1,17 @@
 """MD Worker — Motion Detection (MOG2)"""
 import json
+import re
 import signal
 import time
 import pika
 import structlog
 import setproctitle
+import cv2
+from datetime import datetime
+from pathlib import Path
 
 from worker.config import get_settings
 from worker.motion import detect_motion
-from worker.osd_reader import read_osd
 
 log = structlog.get_logger()
 
@@ -28,14 +31,31 @@ def _connect(settings) -> tuple[pika.BlockingConnection, any]:
     raise RuntimeError("Could not connect to RabbitMQ")
 
 
-def _read_first_frame(video_path: str):
-    """Return (first_frame_ndarray, fps) or (None, 30.0) if video can't be opened."""
-    import cv2 as _cv2
-    cap = _cv2.VideoCapture(video_path)
+def _parse_filename(video_path: str) -> tuple[str | None, datetime | None]:
+    """
+    Parse camera name and recording start time from filename.
+    Expected pattern: CAMNAME_01_20230505200023.mp4
+      - Everything before the _NN_ stream number = camera name (underscores → spaces)
+      - 14-digit suffix = YYYYmmddHHMMSS = timestamp of first frame
+    Returns (camera_name, recorded_at) — both may be None if pattern doesn't match.
+    """
+    stem = Path(video_path).stem
+    m = re.match(r'^(.+)_\d{2}_(\d{14})$', stem)
+    if not m:
+        log.warning("filename_parse_failed", stem=stem)
+        return None, None
+    camera_name = m.group(1).replace('_', ' ')
     try:
-        fps = cap.get(_cv2.CAP_PROP_FPS) or 30.0
-        ret, frame = cap.read()
-        return (frame if ret else None), fps
+        recorded_at = datetime.strptime(m.group(2), '%Y%m%d%H%M%S')
+    except ValueError:
+        return camera_name, None
+    return camera_name, recorded_at
+
+
+def _get_fps(video_path: str) -> float:
+    cap = cv2.VideoCapture(video_path)
+    try:
+        return cap.get(cv2.CAP_PROP_FPS) or 30.0
     finally:
         cap.release()
 
@@ -55,11 +75,10 @@ def process_job(msg: dict, ch, method):
             properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
 
-        # OCR the first frame for OSD timestamp + camera name before running MOG2
-        first_frame, video_fps = _read_first_frame(video_path)
-        osd = read_osd(first_frame) if first_frame is not None else None
-        osd_camera_name = osd.camera_name if osd else None
-        osd_recorded_at = osd.recorded_at.isoformat() if (osd and osd.recorded_at) else None
+        osd_camera_name, osd_recorded_at_dt = _parse_filename(video_path)
+        osd_recorded_at = osd_recorded_at_dt.isoformat() if osd_recorded_at_dt else None
+        video_fps = _get_fps(video_path)
+        log.info("md_filename_parsed", camera=osd_camera_name, recorded_at=osd_recorded_at, fps=video_fps)
 
         motion_frames = detect_motion(video_path)
         log.info("md_motion_detected", job_id=job_id, motion_frames=len(motion_frames))
