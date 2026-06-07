@@ -204,10 +204,20 @@ function TrackCard({ track, onClick }) {
         )}
 
         {/* Class badge */}
-        <div className="absolute top-2 left-2">
+        <div className="absolute top-2 left-2 flex flex-col gap-1">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full border capitalize ${classColor(track.class_label)}`}>
             {track.class_label ?? 'unknown'}
           </span>
+          {track.track_type === 'stationary' && (
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full border bg-amber-500/20 text-amber-300 border-amber-500/40">
+              🅿 stationary
+            </span>
+          )}
+          {track.track_type === 'moving' && (
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
+              🏃 moving
+            </span>
+          )}
         </div>
         {/* Confidence */}
         {track.confidence_max != null && (
@@ -440,6 +450,9 @@ function TrackDrawer({ trackId, onClose }) {
                       { label: 'Ended',      value: endTime ?? '—' },
                       { label: 'Duration',   value: duration ?? '—' },
                       { label: 'Frames',     value: detail.first_frame != null ? `${detail.first_frame} – ${detail.last_frame}` : '—' },
+                      { label: 'Track type', value: detail.track_type
+                          ? <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${detail.track_type === 'stationary' ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'}`}>{detail.track_type}</span>
+                          : <span className="text-slate-500 text-xs">unclassified</span> },
                     ].map(({ label, value }) => (
                       <div key={label} className="bg-slate-800/60 rounded-lg px-3 py-2.5 border border-slate-700">
                         <p className="text-slate-500 text-xs mb-1">{label}</p>
@@ -811,10 +824,37 @@ function getDateRange(preset, customRange) {
   }
 }
 
+// ── Moving/Stationary toggle ──────────────────────────────────────────────────
+function TrackTypeToggle({ value, onChange }) {
+  const opts = [
+    { value: '',           label: 'All',        icon: '◎' },
+    { value: 'moving',     label: 'Moving',     icon: '🏃' },
+    { value: 'stationary', label: 'Stationary', icon: '🅿' },
+  ]
+  return (
+    <div className="flex items-center bg-slate-800 border border-slate-700 rounded-lg p-0.5 gap-0.5">
+      {opts.map(opt => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all whitespace-nowrap
+            ${value === opt.value
+              ? 'bg-brand text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'}`}
+        >
+          <span>{opt.icon}</span>
+          <span>{opt.label}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function Tracks() {
   const [cameras, setCameraList] = useState([])
   const [selectedCameras, setSelectedCameras] = useState([])
   const [selectedClasses,  setSelectedClasses]  = useState([])
+  const [trackType, setTrackType] = useState('')   // '' = all, 'moving', 'stationary'
   const [sort, setSort] = useState('newest')
   const [timePreset, setTimePreset] = useState('all')
   const [customRange, setCustomRange] = useState(null)
@@ -838,12 +878,13 @@ export default function Tracks() {
     JSON.stringify({
       selectedCameras: [...selectedCameras].sort(),
       selectedClasses: [...selectedClasses].sort(),
+      trackType,
       sort,
       timePreset,
       customFrom: customRange?.from?.toISOString() ?? '',
       customTo:   customRange?.to?.toISOString() ?? '',
     }),
-    [selectedCameras, selectedClasses, sort, timePreset, customRange]
+    [selectedCameras, selectedClasses, trackType, sort, timePreset, customRange]
   )
 
   // Reset to page 1 whenever filters change
@@ -868,6 +909,7 @@ export default function Tracks() {
       sort,
       camera:      selectedCameras,
       class_label: selectedClasses,
+      ...(trackType ? { track_type: trackType } : {}),
       ...dateRange,
     })
       .then(res => {
@@ -894,7 +936,7 @@ export default function Tracks() {
     return () => obs.disconnect()
   }, [hasMore, loading])
 
-  const hasActiveFilters = selectedCameras.length > 0 || selectedClasses.length > 0 || timePreset !== 'all'
+  const hasActiveFilters = selectedCameras.length > 0 || selectedClasses.length > 0 || trackType !== '' || timePreset !== 'all'
 
   const cameraOptions = cameras.map(c => ({ value: c, label: c }))
   const classOptions  = KNOWN_CLASSES.map(c => ({ value: c, label: c }))
@@ -925,6 +967,7 @@ export default function Tracks() {
           selected={selectedClasses}
           onChange={v => setSelectedClasses(v)}
         />
+        <TrackTypeToggle value={trackType} onChange={setTrackType} />
         <TimeFilter
           preset={timePreset}
           customRange={customRange}
@@ -955,6 +998,7 @@ export default function Tracks() {
           <button
             onClick={() => {
               setSelectedCameras([]); setSelectedClasses([])
+              setTrackType('')
               setTimePreset('all'); setCustomRange(null)
             }}
             className="text-xs text-slate-400 hover:text-white border border-slate-600 rounded-lg px-2.5 py-1.5 hover:border-slate-500 transition-colors"

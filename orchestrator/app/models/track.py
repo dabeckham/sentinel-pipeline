@@ -16,6 +16,7 @@ class Track(Base):
     last_frame: Mapped[int] = mapped_column(Integer, nullable=True)
     snapshot_path: Mapped[str] = mapped_column(Text, nullable=True)  # MinIO path
     snapshot_bbox: Mapped[dict] = mapped_column(JSON, nullable=True)  # bbox from best-shot frame
+    track_type: Mapped[str] = mapped_column(String(16), nullable=True, index=True)  # moving | stationary
     # Wall-clock timestamps derived from OSD recorded_at + frame offset
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
