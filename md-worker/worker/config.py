@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Resize factor applied before MOG2 — bboxes are scaled back to original res for cropping
     # 0.25 = 640×360 from 2560×1440 (16× fewer pixels, ~8-10× faster MOG2)
     motion_scale: float = 0.25
+    # Dilation kernel applied to foreground mask before contour finding.
+    # Merges nearby motion blobs from the same object into a single stable bbox,
+    # which is critical for ByteTrack IoU matching to work across frames.
+    # Value is in scaled-frame pixels (at motion_scale=0.25, 20px here = 80px original).
+    motion_dilate_px: int = 20
 
     # Debug video (issue #14) — set MD_DEBUG_VIDEO=true to enable
     md_debug_video: bool = False
