@@ -24,13 +24,13 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
-    # ByteTrack tuning — defaults suit frame_skip=2 at ~30fps cameras
-    # Lower match threshold handles larger inter-frame jumps from skipped frames
-    bytetrack_match_threshold: float = 0.3
-    # Buffer in frames — how long to hold a lost track before killing it
-    # Set high enough to survive motion_frame_skip gaps (frame_skip+1) * fps
+    # ByteTrack tuning
+    # match_threshold: IoU required to associate a detection with an existing track.
+    # Default 0.8 works well once dilation gives stable whole-object bboxes.
+    bytetrack_match_threshold: float = 0.8
+    # lost_track_buffer: frames to hold a lost track before dropping it.
+    # Raised from default 30 to survive motion_frame_skip=2 gaps at 30fps.
     bytetrack_lost_buffer: int = 90
-    # Minimum consecutive frames before a track is confirmed
     bytetrack_min_hits: int = 1
 
     def rabbitmq_params(self):

@@ -77,6 +77,13 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
                 fgmask = fgbg.apply(small)
                 _, fgmask = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
 
+                # Dilate to merge nearby motion blobs from the same moving object
+                # into one stable bbox — critical for ByteTrack IoU matching.
+                if s.motion_dilate_px > 0:
+                    kernel = cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE, (s.motion_dilate_px, s.motion_dilate_px))
+                    fgmask = cv2.dilate(fgmask, kernel, iterations=1)
+
                 contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
                 boxes = []
