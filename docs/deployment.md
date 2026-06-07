@@ -1,5 +1,5 @@
 # Sentinel Pipeline — Deployment Guide
-*v0.5.0 — All 5 phases complete — Last updated: 2026-06-06*
+*v0.5.0 — All 5 phases complete — Last updated: 2026-06-07 (session 13)*
 
 ---
 
@@ -130,7 +130,17 @@ docker exec sentinel-rabbitmq rabbitmqctl set_user_tags sentinel administrator
 docker exec sentinel-rabbitmq rabbitmqctl set_permissions -p / sentinel ".*" ".*" ".*"
 ```
 
-### 5. Start all services
+### 5. Create the YOLO model cache volume
+
+The OC worker caches `yolo11s.pt` in a named volume at `/app/models`. Create it once before first start:
+
+```bash
+docker volume create sentinel-pipeline_yolo-models
+```
+
+The model (~20 MB) downloads on the first job and is reused across restarts. Without this volume it re-downloads every container start.
+
+### 6. Start all services
 
 **GPU mode (recommended — OC workers on GPU 1):**
 ```bash
@@ -144,7 +154,7 @@ docker compose up -d
 
 > ⚠️ **Always use both compose files together for GPU mode.** Running `docker-compose.gpu.yml` alone causes the oc-worker to join the wrong Docker network (DNS for `rabbitmq` fails) and to miss env vars (RabbitMQ auth fails).
 
-### 6. Verify deployment
+### 7. Verify deployment
 ```bash
 # All containers healthy
 docker compose ps
@@ -163,7 +173,7 @@ curl -s http://localhost:8000/api/stats -H "Authorization: Bearer $TOKEN" | pyth
 open http://192.168.55.10:3000
 ```
 
-### 7. Change default admin password
+### 8. Change default admin password
 Log in to the UI at http://192.168.55.10:3000 (admin / changeme) and change the password immediately, or via API:
 ```bash
 # Get token first (see step 6), then:
@@ -181,19 +191,33 @@ curl -s -X PATCH http://localhost:8000/api/users/1 \
 ```bash
 cd ~/sentinel-pipeline
 git pull
-docker compose build
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+# Orchestrator (source baked into image — restart alone won't pick up changes)
+docker compose build orchestrator && docker compose up -d orchestrator
+
+# OC worker — MUST use both compose files; use CACHEBUST to bust the COPY layer
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml build \
+  --build-arg CACHEBUST=$(date +%s) oc-worker
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
+
+# MD worker
+docker compose build md-worker && docker compose up -d md-worker
+
+# UI
+docker compose build ui && docker compose up -d ui
 ```
 
 ### Full clean rebuild (when system deps or requirements.txt changed)
 ```bash
 git pull
 docker compose build --no-cache
-docker compose -f docker-compose.gpu.yml build --no-cache oc-worker
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml build --no-cache oc-worker
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-> **Note on `--no-cache` for oc-worker:** The GPU Dockerfile uses `ubuntu22.04` + `python3.10`. The `deadsnakes` PPA is not used (unreachable from the build host). `--no-cache` is safe and will install python3.10 from default ubuntu repos. `torch+cu124` and `supervision` install from PyPI without issues.
+> **Note on `--no-cache` for oc-worker:** The GPU Dockerfile uses `ubuntu22.04` + `python3.10`. The `deadsnakes` PPA is not used (unreachable from the build host). `--no-cache` is safe and will install python3.10 from default ubuntu repos. `torch+cu124` installs from PyPI without issues.
+
+> **CACHEBUST arg:** `docker-compose.gpu.yml` declares `ARG CACHEBUST=1` before the `COPY . .` layer. Pass `--build-arg CACHEBUST=$(date +%s)` to force code to be re-copied without doing a full `--no-cache` rebuild (which re-downloads torch/CUDA layers and takes 10+ minutes).
 
 ### Restarting a single service
 ```bash
@@ -252,6 +276,27 @@ Watch:
 - `oc_results` — results waiting to be written to DB
 - `dlx.*` — dead-letter queues; these should normally be empty
 
+### Snapshot storage cleanup
+
+The OC worker saves a full-frame snapshot for every detection (`track_{id}_f{frame}.jpg`) for in-browser playback. These accumulate quickly. Periodically clean them up, keeping only the best-shot thumbnail (`_best.jpg`) per track:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"YOUR_PASSWORD"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Cleanup all jobs (dry-run: check response before running in prod)
+curl -s -X POST http://localhost:8000/api/snapshots/cleanup \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+# Cleanup single job
+curl -s -X POST "http://localhost:8000/api/snapshots/cleanup?job_id=42" \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+Response includes `deleted` (count), `freed_bytes`, and `errors`.
+
 ### Requeue dead-lettered messages (admin only)
 ```bash
 # Check counts
@@ -281,12 +326,25 @@ nvidia-smi             # snapshot
 
 ## Database Migrations
 
-Migrations run automatically on orchestrator startup via Alembic. To run manually:
+Migrations run automatically on orchestrator startup via Alembic.
+
+**Current migration head: `0003`** (adds `snapshot_bbox` JSON column to `tracks`)
+
+| Revision | Description |
+|---|---|
+| 0001 | Initial schema (jobs, tracks, detections, users) |
+| 0002 | OSD metadata (camera_name, recorded_at, started_at, ended_at on tracks/jobs) |
+| 0003 | snapshot_bbox JSON column on tracks (best-shot frame bbox for UI overlay) |
+
+To run or inspect manually:
 ```bash
-docker compose exec orchestrator alembic upgrade head
-docker compose exec orchestrator alembic current
-docker compose exec orchestrator alembic history
+# Must run from /app inside the container — docker compose exec doesn't set the CWD
+docker exec sentinel-orchestrator bash -c 'cd /app && alembic upgrade head'
+docker exec sentinel-orchestrator bash -c 'cd /app && alembic current'
+docker exec sentinel-orchestrator bash -c 'cd /app && alembic history'
 ```
+
+> ⚠️ `docker compose exec orchestrator alembic upgrade head` exits silently without error but does **not** apply migrations — the working directory is wrong. Always use `docker exec ... bash -c 'cd /app && alembic ...'`.
 
 ---
 
