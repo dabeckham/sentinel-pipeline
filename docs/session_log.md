@@ -24,11 +24,12 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 
 ---
 
-## Current Status — ALL 5 PHASES COMPLETE ✅
+## Current Status — ALL 5 PHASES COMPLETE ✅ + Post-Launch Tuning
 
 **Orchestrator version: 0.5.0**  
-**Last commit: `e45f37f`** — nginx DNS fix (2026-06-06)  
-**All 12 GitHub issues closed.**
+**Last commit: `0fe7756`** — Frigate-style Tracked Objects UI (2026-06-07)  
+**Alembic migration: 0002** (camera_name, recorded_at, started_at, ended_at columns added)  
+**12 original GitHub issues closed. Issue #17 (Frigate UI) implemented.**
 
 ### Live Services
 | Service | URL | Status |
@@ -38,11 +39,6 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 | API Docs | http://192.168.55.10:8000/docs | ✅ Up |
 | RabbitMQ Mgmt | http://192.168.55.10:15672 | ✅ Up |
 | MinIO Console | http://192.168.55.10:9001 | ✅ Up |
-
-### Pipeline Stats (as of 2026-06-06 ~21:00 UTC)
-- 78 total jobs, 78 completed
-- 378 tracks, 5281 detections
-- Class breakdown: car (192), truck (73), bus (23), train (21), parking meter (18), person (13), boat (13), plus misc false positives
 
 ---
 
@@ -113,7 +109,10 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
 | GET | /api/jobs | any | Paginated job list (filter by status) |
 | GET | /api/jobs/{id} | any | Single job |
 | GET | /api/jobs/{id}/tracks | any | Tracks for a job |
-| GET | /api/tracks | any | Paginated tracks (filter by class_label) |
+| GET | /api/tracks | any | Paginated tracks (filter by camera/class/date, sort, detection_count, started_at/ended_at) |
+| GET | /api/tracks/cameras | any | Distinct camera names with associated tracks |
+| GET | /api/tracks/{id} | any | Track detail with full detections list |
+| GET | /api/snapshots/{path} | any | Proxy MinIO snapshot images to browser (auth required, 1-day cache) |
 | GET/PUT | /api/config | admin | Runtime config (LAN trust toggle etc) |
 | GET/POST/PATCH/DELETE | /api/users | admin | User CRUD |
 | GET | /api/dlx/counts | admin | DLX queue depths |
@@ -161,14 +160,32 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-06 | 4 | Phase 2 verified on real driveway footage. ByteTrack IndexError fixed. GPU acceleration enabled (6x speedup) |
 | 2026-06-06 | 5 | Power outage recovery. 12-video smoke test (95 tracks, 1310 detections). GitHub issues #1-12 created. Discord webhooks set up. Memory files created |
 | 2026-06-06 | 6 | Phase 3 (Auth/API) complete. Fixed bcrypt/passlib. Admin seeded. All endpoints verified. Phase 4 (UI) built and deployed. Phase 5 (recovery) built and deployed. All 12 issues closed. Deployment + DR docs updated. Fixed nginx 502 (stale DNS + path doubling) |
+| 2026-06-07 | 7 | Post-launch tuning. Issues #13-16: in-memory crops, debug video, watcher loop fix, MOG2 scale. Docker Hub v0.5.0 push. Track fragmentation fix (bbox merging). Ghost track fix (lost_buffer 90→10). YOLO class filter (vehicles/person/animals only). Confidence 0.45→0.85. OSD OCR (pytesseract first-frame timestamp + camera name, alembic migration 0002). Frigate-style Tracked Objects UI (#17): card grid, filters, detail drawer, snapshot proxy. Fixed SSH — was using wrong username `don`, should be `dabeckham`. |
 
 ---
 
-## What's Next (Phase 6+)
+## Post-Launch Pipeline Behaviour
 
-No immediate tasks. Possible future work:
+- **Motion detection:** MOG2 at 25% scale (640×360), frame_skip=2, contours merged by `_merge_boxes(merge_dist=30)` into whole-object bboxes
+- **Classification:** YOLO11s, confidence ≥ 0.85, classes restricted to vehicles/person/animals at inference time (`classes=` param)
+- **Tracking:** ByteTrack, match_threshold=0.8, lost_buffer=10 frames
+- **OSD extraction:** pytesseract OCR on bottom 12% of first frame → `jobs.camera_name`, `jobs.recorded_at`
+- **Track timestamps:** `tracks.started_at` / `tracks.ended_at` = `recorded_at + frame_offset_ms`
+- **Debug video:** `MD_DEBUG_VIDEO=true` in compose → `_debug.mp4` written to `/ingest/debug/` at 640×360
+
+## Known Gotchas (updated)
+
+1. **SSH username is `dabeckham`** — not `don`. Always: `ssh -i ~/.ssh/claude_cowork dabeckham@192.168.55.10`
+2. **oc-worker must use both compose files** — standalone GPU compose joins wrong network and loses env vars
+3. **bcrypt pinned to 3.2.2** — passlib 1.7.4 incompatible with bcrypt 4.x
+4. **Dockerfile.gpu uses ubuntu22.04 + python3.10** — deadsnakes PPA unreachable; ubuntu24.04 CUDA conflicts with torch+cu124
+5. **NFS + inotify = silent failure** — always use PollingObserver
+6. **CUDA_VISIBLE_DEVICES must be "0" inside container** — Docker remaps physical GPU 1 → container GPU 0
+7. **nginx proxy_pass + variable = path doubling** — use `proxy_pass http://$var:8000;` (no path) + `resolver 127.0.0.11 valid=10s`
+8. **NFS remounted rw** — required for md-worker debug video; docker-compose.yml has `/ingest:rw`
+
+## What's Next
+
+- **OSD accuracy testing** — pytesseract quality depends on camera/font; may need tuning of strip height or preprocessing
 - **Phase 6:** RTSP live stream worker pool
-- **Cron backup:** Set up PostgreSQL daily backup and MinIO nightly mirror (see DR doc checklist)
-- **LAN trust mode:** Currently `false` in config — can enable via `PUT /api/config {"lan_trust_enabled": "true"}` to skip JWT from 192.168.x.x
-- **False positive tuning:** YOLO11s is detecting parking meters, trains, zebras in driveway footage — consider confidence threshold tuning or model upgrade
-- **Dashboard UX:** Class breakdown shows false positives prominently — could add a filter or confidence threshold slider
+- **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
