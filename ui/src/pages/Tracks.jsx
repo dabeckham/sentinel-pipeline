@@ -98,6 +98,42 @@ function SnapshotImg({ path, alt = 'snapshot', style = {}, onNaturalSize }) {
   )
 }
 
+// ── Bbox overlay — SVG rect drawn over the snapshot in the modal viewer ──────
+function BboxOverlay({ bbox, imgSize, viewerEl, zoom }) {
+  if (!bbox || !imgSize || !viewerEl) return null
+  const vw = viewerEl.clientWidth
+  const vh = viewerEl.clientHeight
+  if (!vw || !vh) return null
+
+  const fitScale = Math.min(vw / imgSize.w, vh / imgSize.h)
+  const ox = (vw - imgSize.w * fitScale) / 2
+  const oy = (vh - imgSize.h * fitScale) / 2
+
+  const rx = ox + bbox.x * fitScale
+  const ry = oy + bbox.y * fitScale
+  const rw = bbox.w * fitScale
+  const rh = bbox.h * fitScale
+
+  // strokeWidth inversely scaled so the rect stays visually ~2px regardless of zoom
+  const sw = Math.max(0.5, 2 / (zoom || 1))
+
+  return (
+    <svg
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+      viewBox={`0 0 ${vw} ${vh}`}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x={rx} y={ry} width={Math.max(1, rw)} height={Math.max(1, rh)}
+        fill="rgba(34,211,238,0.08)"
+        stroke="#22d3ee"
+        strokeWidth={sw}
+        strokeDasharray={`${4 / zoom} ${2 / zoom}`}
+      />
+    </svg>
+  )
+}
+
 // ── Track card ────────────────────────────────────────────────────────────────
 function TrackCard({ track, onClick }) {
   const duration = fmtDuration(track.started_at, track.ended_at)
@@ -150,6 +186,7 @@ function TrackCard({ track, onClick }) {
           transition: 'transform 0.3s ease',
         }}>
           <SnapshotImg path={track.snapshot_path} onNaturalSize={setThumbSize} />
+          <BboxOverlay bbox={track.snapshot_bbox} imgSize={thumbSize} viewerEl={thumbRef.current} zoom={thumbTransform ? 2 : 1} />
         </div>
         {/* Class badge overlay */}
         <div className="absolute top-2 left-2">
@@ -405,6 +442,7 @@ function TrackDrawer({ trackId, onClose }) {
                   willChange: 'transform',
                 }}>
                   <SnapshotImg path={currentSnapshotPath} onNaturalSize={setImgSize} />
+                  <BboxOverlay bbox={curDet?.bbox} imgSize={imgSize} viewerEl={viewerRef.current} zoom={zoom} />
                 </div>
 
                 {/* Frame counter overlay */}
