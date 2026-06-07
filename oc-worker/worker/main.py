@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from worker.config import get_settings
-from worker.detector import classify_crop, track_frame, release_tracker, get_model
+from worker.detector import track_frame, release_tracker, get_model
 from worker.minio_client import upload_snapshot
 
 log = structlog.get_logger()
