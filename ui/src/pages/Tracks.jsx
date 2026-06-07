@@ -113,26 +113,25 @@ function TrackCard({ track, onClick }) {
     const ch = thumbRef.current.clientHeight   // 160px
     const { w: iw, h: ih } = thumbSize
 
-    // objectFit:contain scale — image is letterboxed inside the container
-    const scale = Math.min(cw / iw, ch / ih)
-    const rendW = iw * scale
-    const rendH = ih * scale
-    // Top-left corner of the rendered image within the container
-    const ox = (cw - rendW) / 2
-    const oy = (ch - rendH) / 2
+    // objectFit:contain scale and letterbox offsets
+    const fitScale = Math.min(cw / iw, ch / ih)
+    const ox = (cw - iw * fitScale) / 2
+    const oy = (ch - ih * fitScale) / 2
 
-    // Bbox centre in container coords
-    const bcx = ox + (bbox.x + bbox.w / 2) * scale
-    const bcy = oy + (bbox.y + bbox.h / 2) * scale
+    // Bbox centre in container coords (absolute position within the thumbnail div)
+    const bcx = ox + (bbox.x + bbox.w / 2) * fitScale
+    const bcy = oy + (bbox.y + bbox.h / 2) * fitScale
 
-    // Zoom so bbox fills ~70% of the smaller container dimension
-    const zoomX = cw * 0.7 / (bbox.w * scale)
-    const zoomY = ch * 0.7 / (bbox.h * scale)
-    const z = Math.min(6, Math.max(1.2, Math.min(zoomX, zoomY)))
+    // Zoom so bbox fills ~70% of the smaller dimension
+    const z = Math.min(6, Math.max(1.2,
+      Math.min(cw * 0.7 / (bbox.w * fitScale), ch * 0.7 / (bbox.h * fitScale))
+    ))
 
-    // Pan to centre the bbox — translate applied before scale so divide by z
-    const tx = (cw / 2 - bcx)
-    const ty = (ch / 2 - bcy)
+    // translate(tx,ty) scale(z) with transformOrigin:center —
+    // to bring point (bcx,bcy) to container centre (cw/2,ch/2):
+    //   cw/2 + (bcx - cw/2)*z + tx = cw/2  →  tx = (cw/2 - bcx) * z
+    const tx = (cw / 2 - bcx) * z
+    const ty = (ch / 2 - bcy) * z
 
     return `translate(${tx}px, ${ty}px) scale(${z})`
   }, [track.snapshot_bbox, thumbSize])
@@ -276,23 +275,24 @@ function TrackDrawer({ trackId, onClose }) {
     const vw = viewer.clientWidth
     const vh = viewer.clientHeight
 
-    // Scale factor: image is letterboxed (objectFit:contain) inside viewer
-    const scaleX = vw / imgSize.w
-    const scaleY = vh / imgSize.h
-    const fitScale = Math.min(scaleX, scaleY)      // actual px-per-img-px on screen
+    // objectFit:contain scale and letterbox offsets
+    const fitScale = Math.min(vw / imgSize.w, vh / imgSize.h)
+    const ox = (vw - imgSize.w * fitScale) / 2
+    const oy = (vh - imgSize.h * fitScale) / 2
 
-    // Bbox centre in viewer coords (relative to viewer centre)
-    const bboxCx = (bbox.x + bbox.w / 2) * fitScale - vw / 2
-    const bboxCy = (bbox.y + bbox.h / 2) * fitScale - vh / 2
+    // Bbox centre in container coords (absolute position within viewer div)
+    const bcx = ox + (bbox.x + bbox.w / 2) * fitScale
+    const bcy = oy + (bbox.y + bbox.h / 2) * fitScale
 
-    // Zoom so bbox fills ~60% of the viewer (with padding)
+    // Zoom so bbox fills ~60% of the viewer
     const targetZoom = Math.min(8, Math.max(1.5,
       Math.min(vw * 0.6 / (bbox.w * fitScale), vh * 0.6 / (bbox.h * fitScale))
     ))
 
+    // translate(tx,ty) scale(z) with transformOrigin:center brings (bcx,bcy) to centre:
+    //   tx = (vw/2 - bcx) * z
     setZoom(targetZoom)
-    // Translate to centre bbox: negate because we move image opposite to bbox offset
-    setPan({ x: -bboxCx * targetZoom / 1, y: -bboxCy * targetZoom / 1 })
+    setPan({ x: (vw / 2 - bcx) * targetZoom, y: (vh / 2 - bcy) * targetZoom })
   }, [detIdx, imgSize, autoZoom])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleWheel = useCallback((e) => {
