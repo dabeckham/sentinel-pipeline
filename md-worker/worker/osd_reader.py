@@ -6,11 +6,12 @@ Strategy:
   1. Crop the bottom 12% of the frame (where OSD text lives on most cameras).
   2. Scale up 3x and convert to grayscale for better tesseract accuracy.
   3. Run tesseract with --psm 11 (sparse text — handles mixed layouts).
-  4. Parse timestamp with common security camera date/time regex patterns.
-  5. Remaining text after stripping the timestamp = camera name.
+  4. Split result into lines. Last non-empty line that looks like a camera
+     name is used as camera_name. Lines are searched for a timestamp.
+  5. Timestamp parsing is fuzzy — normalises common OCR digit-merge errors
+     before applying strptime.
 
-Returns OSDResult(camera_name, recorded_at, raw_text). All fields nullable —
-callers must handle None gracefully if OCR finds nothing useful.
+Returns OSDResult(camera_name, recorded_at, raw_text). All fields nullable.
 """
 import re
 from dataclasses import dataclass
@@ -23,23 +24,80 @@ import structlog
 log = structlog.get_logger()
 
 # --------------------------------------------------------------------------- #
-# Timestamp patterns — order matters: try most specific first
+# Helpers
 # --------------------------------------------------------------------------- #
-_TS_PATTERNS = [
-    # 2024-01-15 13:45:22  or  2024/01/15 13:45:22
-    (r'(\d{4})[/\-](\d{2})[/\-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})', '%Y-%m-%d %H:%M:%S'),
-    # 01/15/2024 13:45:22  or  01-15-2024 13:45:22
-    (r'(\d{2})[/\-](\d{2})[/\-](\d{4})\s+(\d{2}):(\d{2}):(\d{2})', '%m/%d/%Y %H:%M:%S'),
-    # 01/15/24 13:45:22
-    (r'(\d{2})[/\-](\d{2})[/\-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})', '%m/%d/%y %H:%M:%S'),
-    # 2024.01.15 13:45:22
-    (r'(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2}):(\d{2})', '%Y.%m.%d %H:%M:%S'),
-]
 
-# Combined pattern just for stripping timestamps out of the raw text
-_TS_STRIP_RE = re.compile(
-    r'\d{2,4}[/\-\.]\d{2}[/\-\.]\d{2,4}\s+\d{2}:\d{2}:\d{2}'
-)
+def _clean_ocr_digits(text: str) -> str:
+    """
+    Normalise common tesseract digit-merge errors so downstream regex can match.
+    e.g. "05/72672026" → "05/26/2026"  (OCR merged "2" with adjacent chars)
+         "11:359:19"  → "11:35:19"     (extra digit in minutes or seconds field)
+         "_" between date and time → space
+    """
+    # Replace underscore between date-like and time-like sections with space
+    text = re.sub(r'(\d)[_](\d)', r'\1 \2', text)
+    # Remove am/pm/AM/PM and day names — extract and handle separately
+    text = re.sub(r'\b(am|pm|AM|PM)\b', '', text)
+    text = re.sub(r'\b(MON|TUE|WED|THU|FRI|SAT|SUN)\b', '', text, flags=re.IGNORECASE)
+    text = text.strip()
+    return text
+
+
+def _try_parse_date_time(text: str) -> datetime | None:
+    """
+    Try to parse a datetime from OCR'd text. Uses multiple format attempts
+    and normalises separators before strptime.
+    """
+    # Strip noise characters (keep digits, / - . : space)
+    cleaned = re.sub(r'[^0-9/:.\- ]', '', _clean_ocr_digits(text)).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+
+    # Candidate patterns (regex, strptime fmt)
+    patterns = [
+        # 2024-01-15 13:45:22  or  2024/01/15 13:45:22
+        (r'(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})', 'ymd'),
+        # 01/15/2024 13:45:22  (month/day/year)
+        (r'(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})', 'mdy'),
+        # 01/15/24 13:45:22  (2-digit year)
+        (r'(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})', 'mdy2'),
+    ]
+
+    for pat, order in patterns:
+        m = re.search(pat, cleaned)
+        if not m:
+            continue
+        g = m.groups()
+        try:
+            if order == 'ymd':
+                yr, mo, dy, hh, mm, ss = int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4]), int(g[5])
+            elif order == 'mdy':
+                mo, dy, yr, hh, mm, ss = int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4]), int(g[5])
+            else:  # mdy2
+                mo, dy, yr2, hh, mm, ss = int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4]), int(g[5])
+                yr = 2000 + yr2 if yr2 < 70 else 1900 + yr2
+
+            if not (1 <= mo <= 12 and 1 <= dy <= 31 and 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+                continue
+            return datetime(yr, mo, dy, hh, mm, ss)
+        except (ValueError, OverflowError):
+            continue
+
+    return None
+
+
+def _looks_like_camera_name(text: str) -> bool:
+    """
+    Heuristic: a camera name has letters, is not mostly digits, and
+    is not a timestamp line.
+    """
+    if not text or len(text) < 2:
+        return False
+    letter_ratio = sum(c.isalpha() for c in text) / max(len(text), 1)
+    if letter_ratio < 0.2:          # mostly digits → probably a timestamp
+        return False
+    if re.search(r'\d{4}.*:\d{2}', text):  # contains year + time → timestamp
+        return False
+    return True
 
 
 @dataclass
@@ -49,60 +107,19 @@ class OSDResult:
     raw_text: str
 
 
-def _parse_timestamp(text: str) -> tuple[datetime | None, str]:
-    """
-    Try each timestamp pattern against text.
-    Returns (parsed_datetime, text_with_timestamp_removed).
-    """
-    for pattern, fmt in _TS_PATTERNS:
-        m = re.search(pattern, text)
-        if m:
-            ts_str = m.group(0)
-            # Normalise separators for strptime
-            ts_normalised = re.sub(r'[/\-\.]', lambda c, i=0: '-' if c.start() < 10 else c.group(), ts_str)
-            # Simpler: just replace all date separators then parse
-            ts_normalised = re.sub(r'[/\-\.](?=\d)', '-', ts_str)
-            # Fix: fmt may use / so normalise fmt to match
-            try:
-                dt = datetime.strptime(ts_normalised, fmt.replace('/', '-').replace('.', '-'))
-                cleaned = re.sub(re.escape(ts_str), '', text)
-                return dt, cleaned
-            except ValueError:
-                continue
-    return None, text
-
-
-def _parse_camera_name(text: str) -> str | None:
-    """
-    Extract a camera name from OCR'd text that has had the timestamp stripped.
-    Looks for a non-trivial alphanumeric token (at least 2 chars).
-    """
-    for chunk in re.split(r'[\n\r|,]+', text):
-        chunk = chunk.strip()
-        # Must have at least 2 alphanumeric characters, not pure punctuation/whitespace
-        if len(chunk) >= 2 and re.search(r'[A-Za-z0-9]{2,}', chunk):
-            return chunk[:80]
-    return None
-
-
 def _preprocess_strip(strip: np.ndarray) -> np.ndarray:
     """
     Scale up and binarise a bottom-strip crop to maximise tesseract accuracy.
-    Tries both light-text-on-dark and dark-text-on-light.
-    Returns the version that tesseract is likely to prefer (light text inverted to black-on-white).
     """
     h, w = strip.shape[:2]
-    # Scale up 3x — tesseract prefers at least 300dpi equivalent
     large = cv2.resize(strip, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(large, cv2.COLOR_BGR2GRAY)
 
-    # Detect if text is light-on-dark (common for camera OSD) and invert
+    # Invert if text is light-on-dark (common for camera OSD)
     mean_val = float(gray.mean())
     if mean_val < 128:
-        # Dark background — invert so text is dark on white for tesseract
         gray = cv2.bitwise_not(gray)
 
-    # Slight blur to remove compression noise, then threshold
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return binary
@@ -116,8 +133,7 @@ def read_osd(frame: np.ndarray) -> OSDResult:
     try:
         import pytesseract
     except ImportError:
-        log.warning("pytesseract_not_installed",
-                    msg="Add pytesseract to requirements and tesseract-ocr to Dockerfile")
+        log.warning("pytesseract_not_installed")
         return OSDResult(None, None, "")
 
     h, w = frame.shape[:2]
@@ -126,8 +142,8 @@ def read_osd(frame: np.ndarray) -> OSDResult:
 
     processed = _preprocess_strip(strip)
 
-    # --psm 11 = sparse text (find text anywhere, good for overlaid OSD)
-    config = '--psm 11 --oem 1 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:/.-_ '
+    # --psm 11 = sparse text, good for overlaid OSD
+    config = '--psm 11 --oem 1'
     try:
         raw_text = pytesseract.image_to_string(processed, config=config).strip()
     except Exception as exc:
@@ -135,14 +151,32 @@ def read_osd(frame: np.ndarray) -> OSDResult:
         return OSDResult(None, None, "")
 
     if not raw_text:
-        log.debug("osd_no_text_found")
         return OSDResult(None, None, "")
 
-    recorded_at, remaining = _parse_timestamp(raw_text)
-    camera_name = _parse_camera_name(remaining)
+    # Split into non-empty lines and work line by line
+    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+
+    recorded_at: datetime | None = None
+    camera_name: str | None = None
+
+    # Try each line as a timestamp candidate; grab camera name from lines that
+    # don't parse as timestamps — prefer the LAST such line (camera name is
+    # usually bottom-right, timestamp is bottom-left on most DVR/NVR systems).
+    name_candidates = []
+    for line in lines:
+        dt = _try_parse_date_time(line)
+        if dt and recorded_at is None:
+            recorded_at = dt
+        elif _looks_like_camera_name(line):
+            name_candidates.append(line[:80])
+
+    # Last candidate is most likely the camera name (furthest from timestamp)
+    if name_candidates:
+        camera_name = name_candidates[-1]
 
     log.info("osd_parsed",
              raw_text=raw_text,
+             lines=lines,
              recorded_at=recorded_at.isoformat() if recorded_at else None,
              camera_name=camera_name)
 
