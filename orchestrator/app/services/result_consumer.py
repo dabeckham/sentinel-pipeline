@@ -34,6 +34,34 @@ def _handle_message(body: bytes):
         return
 
     job_id = msg.get("job_id")
+
+    # MD worker status ping — just update job status and broadcast
+    if msg.get("md_status"):
+        db = SessionLocal()
+        try:
+            job = db.query(Job).filter_by(id=job_id).first()
+            if job and job.status == JobStatus.queued:
+                job.status = JobStatus.md_processing
+                db.commit()
+                try:
+                    from app.api.ws import broadcast
+                    from app.services.event_loop import get_loop
+                    loop = get_loop()
+                    if loop is not None:
+                        import asyncio
+                        asyncio.run_coroutine_threadsafe(
+                            broadcast({"type": "job_update", "job_id": job_id, "status": "md_processing"}),
+                            loop,
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("md_status_update_error", job_id=job_id)
+            db.rollback()
+        finally:
+            db.close()
+        return
+
     track_id = msg.get("track_id")
     frame_index = msg.get("frame_index")
     class_label = msg.get("class_label")
