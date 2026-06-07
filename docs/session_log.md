@@ -27,9 +27,9 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 ## Current Status — ALL 5 PHASES COMPLETE ✅ + Post-Launch Tuning
 
 **Orchestrator version: 0.5.0**  
-**Last commit: `85351a8`** — Full-frame snapshots instead of crops (2026-06-08)  
-**Alembic migration: 0002** (camera_name, recorded_at, started_at, ended_at columns added)  
-**21 GitHub issues total. Issues #18–21 fixed session 9.**
+**Last commit: `f8dc53e`** — snapshot_bbox: best-shot bbox stored in tracks table (2026-06-07)  
+**Alembic migration: 0003** (snapshot_bbox JSON column added to tracks)  
+**40 GitHub issues total. Issues #34–40 fixed session 12. Session 13: #41 (snapshot_bbox) deployed.**
 
 ### Live Services
 | Service | URL | Status |
@@ -166,6 +166,7 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-07 | 10 | Jobs page real-time updates: WebSocket connection + 10s polling fallback, elapsed status timer (resets on status change, hidden when complete), Live/Polling indicator. Fixed asyncio broadcast bug: `get_event_loop()` from background thread in Python 3.10+ returns dead loop — fixed with `event_loop.py` storing FastAPI's real loop at startup. Fixed pipeline order: was MOG2 blobs → ByteTrack → YOLO (backwards). Correct: YOLO detects within MOG2 crops → translate bbox to full-frame → ByteTrack. Fixed positional index mapping bug in track_frame (ByteTrack output order ≠ input order — now matched by IoU). ByteTrack: match_threshold 0.8→0.3, lost_buffer 10→60. DB and MinIO cleared for fresh start. |
 | 2026-06-07 | 11 | Major pipeline rework. (1) Replaced OCR entirely with filename parsing — `CAMNAME_NN_YYYYmmddHHMMSS` → camera name + timestamp, per-frame times from FPS. (2) Switched from per-crop YOLO+ByteTrack to `model.track(full_frame, tracker="botsort.yaml")` — BoT-SORT runs on complete frames for full context + appearance ReID. reset_tracker() on is_final separates jobs cleanly. (3) Best-shot thumbnail: OC worker tracks frame where bbox vertical center is closest to frame center, saves as `_best.jpg`, overwrites when better. Per-detection `_f{frame}.jpg` kept for playback. (4) md_processing status: MD worker publishes status ping to oc_results at job start. (5) Jobs page: removed duplicate WS (Layout owns it), adaptive polling 2s/8s with loadRef/dataRef to fix stale closure. Toast only on completed/failed. (6) Fixed year missing from track dates in UI (fmtTime missing `year: 'numeric'`). Issues #26–#33 fixed. DB/store purged twice for fresh testing. |
 | 2026-06-07 | 12 | Studied Frigate source in running container. Replaced MOG2 with Frigate's weighted-average motion detector (avg_frame + avg_delta temporal smoothing, background only absorbs after 10 consecutive motion frames, contrast normalization). Replaced BoT-SORT with Norfair 2.3.0 + Frigate's scale-normalized distance function (normalizes position change by object's own bbox size). Fixed Norfair: only emit tracks with live detections this frame (not Kalman-predicted positions — used frame_index tag in Detection.data). Lowered YOLO confidence 0.85→0.5, raised hit_counter_max 8→30. Fixed model weight caching: volume now at /app/models so yolo11s.pt persists across restarts. Added POST /api/snapshots/cleanup to delete _f{frame}.jpg playback frames (keep only _best.jpg). Added ARG CACHEBUST to Dockerfile.gpu for targeted cache busting. Discord/status notifications. |
+| 2026-06-07 | 13 | Completed snapshot_bbox work from session 12. Alembic migration 0003 (snapshot_bbox JSON column on tracks). OC worker publishes snapshot_bbox only when frame is new best-shot. Result consumer persists it. Tracks API: removed first_det_sq subquery, reads t.snapshot_bbox directly. BboxOverlay SVG component in UI: cyan dashed rectangle drawn over thumbnail and modal snapshot viewer aligned to bbox coords, strokeWidth inversely scaled by zoom. Deployed: git pull → alembic upgrade head → rebuild/restart orchestrator + oc-worker. SSH permission granted by user for future deploys. |
 
 ---
 
@@ -192,8 +193,10 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 
 | Path | Purpose |
 |---|---|
-| `{job_id}/track_{track_id:06d}.jpg` | Track thumbnail — full original frame of first detection, used on card grid |
-| `{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg` | Per-detection full frame — used for playback in modal |
+| `{job_id}/track_{track_id:06d}_best.jpg` | Best-shot thumbnail — frame where bbox vertical center is closest to frame center. Overwritten when better frame found. Used on card grid. |
+| `{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg` | Per-detection full frame — used for playback in modal. Cleanup target. |
+
+**snapshot_bbox** — tracks table `snapshot_bbox` JSON column stores the bbox `{x,y,w,h}` from the best-shot frame, so the cyan BboxOverlay in the UI aligns with the thumbnail.
 
 **Note:** Crops are never stored. MD sends full frame base64 (JPEG q80) alongside crops in motion_results. OC uses crops only for inference; saves full frame as snapshot.
 
@@ -214,7 +217,7 @@ Frontend fetches with `Authorization: Bearer` header, converts to blob URL (plai
 
 - **Verify Norfair tracking quality** — drop fresh camera footage, confirm track count per object is 1 (or close), check DB for fragmented tracks
 - **Run cleanup** — call `POST /api/snapshots/cleanup` (admin) to delete accumulated `_f{frame}.jpg` playback frames, keeping only `_best.jpg`
-- **Bbox overlay on full frames** — draw bbox rectangle on snapshot thumbnails in UI (coordinates stored in DB)
+- ~~**Bbox overlay on full frames**~~ — DONE session 13 (BboxOverlay SVG component, snapshot_bbox column)
 - **Phase 6:** RTSP live stream worker pool
 - **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
 
