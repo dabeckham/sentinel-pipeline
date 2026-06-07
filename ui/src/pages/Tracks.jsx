@@ -199,8 +199,11 @@ function TrackDrawer({ trackId, onClose }) {
 
   const dets = detail?.detections ?? []
   const curDet = dets[detIdx] ?? null
-  // Use per-detection crop if available, else fall back to track thumbnail
-  const currentSnapshotPath = curDet?.crop_path ?? detail?.snapshot_path
+  // Only use per-detection crops if this track actually has them
+  const hasCrops = dets.some((d) => d.crop_path)
+  const currentSnapshotPath = hasCrops
+    ? (curDet?.crop_path ?? detail?.snapshot_path)
+    : detail?.snapshot_path
 
   const duration = detail ? fmtDuration(detail.started_at, detail.ended_at) : null
   const startTime = detail ? fmtTime(detail.started_at) : null
@@ -269,8 +272,15 @@ function TrackDrawer({ trackId, onClose }) {
                 )}
               </div>
 
-              {/* Playback controls */}
-              {dets.length > 0 && (
+              {/* No-crops notice */}
+              {!hasCrops && dets.length > 0 && (
+                <div className="text-center text-xs text-slate-500 py-2 bg-slate-800/60 border-b border-slate-700">
+                  Frame-by-frame playback available for tracks processed after v0.5.1
+                </div>
+              )}
+
+              {/* Playback controls — only when per-detection crops exist */}
+              {hasCrops && dets.length > 0 && (
                 <div className="flex items-center justify-center gap-3 px-4 py-3 bg-slate-800/80 border-b border-slate-700 shrink-0">
                   <button
                     onClick={() => { setPlaying(false); setDetIdx((i) => Math.max(0, i - 1)) }}
@@ -322,7 +332,7 @@ function TrackDrawer({ trackId, onClose }) {
                   ))}
                 </div>
 
-                {/* Detection list — clickable rows */}
+                {/* Detection list — clickable rows (only interactive when crops exist) */}
                 {dets.length > 0 && (
                   <div>
                     <h4 className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-2">Detections</h4>
@@ -330,8 +340,8 @@ function TrackDrawer({ trackId, onClose }) {
                       {dets.map((d, i) => (
                         <button
                           key={d.id}
-                          onClick={() => { setPlaying(false); setDetIdx(i) }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : 'hover:bg-slate-800/60'}`}
+                          onClick={() => hasCrops && (setPlaying(false), setDetIdx(i))}
+                          className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${hasCrops && i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : hasCrops ? 'hover:bg-slate-800/60' : 'cursor-default'}`}
                         >
                           <span className="text-slate-500 font-mono w-16 shrink-0">f {d.frame_index}</span>
                           <span className="text-slate-300 flex-1 capitalize">{d.class_label ?? '—'}</span>
