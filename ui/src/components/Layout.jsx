@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 import { wsUrl } from '../api.js'
+import MetricsBar from './MetricsBar.jsx'
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: '📊' },
@@ -112,17 +113,20 @@ export default function Layout() {
         </div>
       </nav>
 
-      {/* Main */}
-      <main className="flex-1 overflow-y-auto bg-slate-900">
+      {/* Main — pb-10 leaves room for the metrics bar */}
+      <main className="flex-1 overflow-y-auto bg-slate-900 pb-10">
         <Outlet />
       </main>
 
-      {/* Toast */}
+      {/* Toast — sits above metrics bar */}
       {toast && (
-        <div className="fixed bottom-4 right-4 bg-slate-700 border border-slate-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50 transition-all">
+        <div className="fixed bottom-12 right-4 bg-slate-700 border border-slate-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50 transition-all">
           🔔 {toast}
         </div>
       )}
+
+      {/* Persistent system metrics strip */}
+      <MetricsBar />
     </div>
   )
 }
