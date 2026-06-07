@@ -59,7 +59,7 @@ function SnapshotImg({ path, alt = 'snapshot', className = '' }) {
     <img
       src={src}
       alt={alt}
-      className={`object-cover ${className}`}
+      className={`absolute inset-0 w-full h-full object-cover ${className}`}
       onError={() => setErrored(true)}
     />
   )
@@ -77,7 +77,7 @@ function TrackCard({ track, onClick }) {
     >
       {/* Thumbnail */}
       <div className="relative aspect-video bg-slate-700/40 overflow-hidden">
-        <SnapshotImg path={track.snapshot_path} className="w-full h-full" />
+        <SnapshotImg path={track.snapshot_path} />
         {/* Class badge overlay */}
         <div className="absolute top-2 left-2">
           <span className={`text-xs font-medium px-2 py-0.5 rounded-full border capitalize ${classColor(track.class_label)}`}>
