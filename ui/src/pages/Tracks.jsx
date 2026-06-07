@@ -44,13 +44,13 @@ function fmtTime(iso) {
 }
 
 // ── Snapshot image with fallback ──────────────────────────────────────────────
-function SnapshotImg({ path, alt = 'snapshot', className = '' }) {
+function SnapshotImg({ path, alt = 'snapshot' }) {
   const [errored, setErrored] = useState(false)
   const src = api.snapshotUrl(path)
 
   if (!src || errored) {
     return (
-      <div className={`flex items-center justify-center bg-slate-700/60 text-slate-500 text-3xl ${className}`}>
+      <div className="w-full h-full flex items-center justify-center bg-slate-700/60 text-slate-500 text-3xl">
         🖼️
       </div>
     )
@@ -59,7 +59,7 @@ function SnapshotImg({ path, alt = 'snapshot', className = '' }) {
     <img
       src={src}
       alt={alt}
-      className={`absolute inset-0 w-full h-full object-cover ${className}`}
+      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
       onError={() => setErrored(true)}
     />
   )
@@ -76,7 +76,7 @@ function TrackCard({ track, onClick }) {
       className="group bg-slate-800 border border-slate-700 rounded-xl overflow-hidden hover:border-brand/60 hover:shadow-lg hover:shadow-brand/10 transition-all text-left w-full"
     >
       {/* Thumbnail */}
-      <div className="relative aspect-video bg-slate-700/40 overflow-hidden">
+      <div className="relative w-full overflow-hidden bg-slate-700/40" style={{ height: '160px' }}>
         <SnapshotImg path={track.snapshot_path} />
         {/* Class badge overlay */}
         <div className="absolute top-2 left-2">
