@@ -89,7 +89,7 @@ def _handle_message(body: bytes):
             log.error("oc_result_unknown_job", job_id=job_id)
             return
 
-        if job.status == JobStatus.queued:
+        if job.status in (JobStatus.queued, JobStatus.md_processing):
             job.status = JobStatus.oc_processing
 
         # Save OSD metadata to job on first result that carries it
