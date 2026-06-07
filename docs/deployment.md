@@ -1,5 +1,5 @@
 # Sentinel Pipeline — Deployment Guide
-*v0.5.0 — All 5 phases complete — Last updated: 2026-06-07 (session 13)*
+*v0.6.0 — All 5 phases complete — Last updated: 2026-06-07 (session 14)*
 
 ---
 
@@ -15,11 +15,11 @@
 ### GPU Layout
 | GPU | Physical Index | Default Use | Sentinel Use |
 |---|---|---|---|
-| RTX 3060 | 0 | Frigate (embeddings, detector, ffmpeg) ~5 GB | Do not target |
-| RTX 3060 | 1 | Ollama (unloads when idle) | OC workers (default) |
+| RTX 3060 | 0 | Frigate (embeddings, detector, ffmpeg) ~5 GB | oc-worker-2 (shared — watch VRAM) |
+| RTX 3060 | 1 | Ollama (unloads when idle) | oc-worker (primary) |
 
-> **Rule:** Never set `GPU_DEVICE_ID=0` unless you have confirmed Frigate is stopped.
-> Inside the container, Docker always remaps the assigned GPU to device `0`. Set `CUDA_VISIBLE_DEVICES=0` (not `1`) in the container environment.
+> Inside the container, Docker always remaps the assigned GPU to device `0`. Set `CUDA_VISIBLE_DEVICES=0` inside the container regardless of which physical GPU is assigned.
+> Monitor GPU 0 VRAM in the MetricsBar — if Frigate starts starving, stop oc-worker-2 with `docker stop sentinel-oc-worker-2`.
 
 ### NAS Mount
 ```
@@ -258,9 +258,17 @@ docker compose up -d --scale md-worker=3
 docker compose up -d --scale oc-worker=4
 ```
 
-### More OC workers (GPU) — add a second GPU compose override first
+### Second OC worker on GPU 0 (runs alongside Frigate — watch VRAM)
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --scale oc-worker=2
+# Build and start oc-worker-2 (targets GPU 0)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml build oc-worker-2
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker-2
+
+# Stop oc-worker-2 if GPU 0 VRAM pressure is too high
+docker stop sentinel-oc-worker-2
+
+# Both OC workers at once
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker oc-worker-2
 ```
 
 ---
@@ -328,13 +336,15 @@ nvidia-smi             # snapshot
 
 Migrations run automatically on orchestrator startup via Alembic.
 
-**Current migration head: `0003`** (adds `snapshot_bbox` JSON column to `tracks`)
+**Current migration head: `0005`**
 
 | Revision | Description |
 |---|---|
 | 0001 | Initial schema (jobs, tracks, detections, users) |
 | 0002 | OSD metadata (camera_name, recorded_at, started_at, ended_at on tracks/jobs) |
 | 0003 | snapshot_bbox JSON column on tracks (best-shot frame bbox for UI overlay) |
+| 0004 | track_type String(16) column + index on tracks (moving/stationary classification) |
+| 0005 | md_complete enum value added to JobStatus; md_started_at, md_completed_at, oc_started_at on jobs |
 
 To run or inspect manually:
 ```bash
