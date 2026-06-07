@@ -14,7 +14,7 @@ services:
     environment:
       OC_USE_GPU: "true"
       CUDA_VISIBLE_DEVICES: "0"
-      OC_MODEL_NAME: ${YOLO_MODEL:-yolo11s}
+      OC_MODEL_NAME: yolo11s
     volumes:
       - yolo-models:/app/models
     deploy:
