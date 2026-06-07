@@ -14,9 +14,9 @@ services:
     environment:
       OC_USE_GPU: "true"
       CUDA_VISIBLE_DEVICES: "0"
-      YOLO_MODEL: ${YOLO_MODEL:-yolo26s}
+      OC_MODEL_NAME: ${YOLO_MODEL:-yolo11s}
     volumes:
-      - yolo-models:/root/.config/Ultralytics
+      - yolo-models:/app/models
     deploy:
       resources:
         reservations:
