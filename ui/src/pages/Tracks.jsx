@@ -38,7 +38,7 @@ function fmtTime(iso) {
   if (!iso) return null
   const d = new Date(iso)
   return d.toLocaleString(undefined, {
-    month: 'short', day: 'numeric',
+    year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 }
