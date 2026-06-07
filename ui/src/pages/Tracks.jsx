@@ -152,17 +152,34 @@ function TrackCard({ track, onClick }) {
   )
 }
 
-// ── Detail drawer ─────────────────────────────────────────────────────────────
+// ── Detail modal ──────────────────────────────────────────────────────────────
 function TrackDrawer({ trackId, onClose }) {
-  const [detail, setDetail] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [detail, setDetail]     = useState(null)
+  const [loading, setLoading]   = useState(true)
+  const [detIdx, setDetIdx]     = useState(0)   // current detection index
+  const [playing, setPlaying]   = useState(false)
+  const playRef = useRef(null)
 
   useEffect(() => {
     if (!trackId) return
     setLoading(true)
     setDetail(null)
+    setDetIdx(0)
+    setPlaying(false)
     api.track(trackId).then(setDetail).finally(() => setLoading(false))
   }, [trackId])
+
+  // Auto-play
+  useEffect(() => {
+    if (!playing || !detail?.detections?.length) return
+    playRef.current = setInterval(() => {
+      setDetIdx((i) => {
+        if (i >= detail.detections.length - 1) { setPlaying(false); return i }
+        return i + 1
+      })
+    }, 250)
+    return () => clearInterval(playRef.current)
+  }, [playing, detail])
 
   // Close on Escape
   useEffect(() => {
@@ -170,6 +187,11 @@ function TrackDrawer({ trackId, onClose }) {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [onClose])
+
+  const dets = detail?.detections ?? []
+  const curDet = dets[detIdx] ?? null
+  // Use per-detection crop if available, else fall back to track thumbnail
+  const currentSnapshotPath = curDet?.crop_path ?? detail?.snapshot_path
 
   const duration = detail ? fmtDuration(detail.started_at, detail.ended_at) : null
   const startTime = detail ? fmtTime(detail.started_at) : null
@@ -218,24 +240,71 @@ function TrackDrawer({ trackId, onClose }) {
           )}
 
           {!loading && detail && (
-            <div className="flex flex-col">
-              {/* Snapshot — fixed height thumbnail, not a hero */}
-              <div className="relative w-full bg-slate-800 border-b border-slate-700 shrink-0" style={{ height: '200px' }}>
-                <SnapshotImg path={detail.snapshot_path} />
+            <div className="flex flex-col overflow-y-auto">
+              {/* Snapshot viewer */}
+              <div className="relative w-full bg-black shrink-0" style={{ height: '220px' }}>
+                <SnapshotImg path={currentSnapshotPath} />
+
+                {/* Frame counter overlay */}
+                {dets.length > 0 && (
+                  <div className="absolute top-2 right-2 bg-black/70 text-white text-xs font-mono px-2 py-1 rounded">
+                    {detIdx + 1} / {dets.length}
+                  </div>
+                )}
+
+                {/* Current detection confidence overlay */}
+                {curDet && (
+                  <div className="absolute top-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded">
+                    f{curDet.frame_index} · {fmtConfidence(curDet.confidence)}
+                  </div>
+                )}
               </div>
 
-              <div className="p-5 space-y-5">
-                {/* Metadata grid — first thing visible after thumbnail */}
+              {/* Playback controls */}
+              {dets.length > 0 && (
+                <div className="flex items-center justify-center gap-3 px-4 py-3 bg-slate-800/80 border-b border-slate-700 shrink-0">
+                  <button
+                    onClick={() => { setPlaying(false); setDetIdx((i) => Math.max(0, i - 1)) }}
+                    className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-700 hover:bg-slate-600 text-white transition-colors text-sm"
+                    title="Previous frame"
+                  >◀</button>
+
+                  <button
+                    onClick={() => setPlaying((p) => !p)}
+                    className="w-10 h-10 flex items-center justify-center rounded-full bg-brand hover:bg-brand/80 text-white transition-colors text-base font-bold"
+                    title={playing ? 'Pause' : 'Play'}
+                  >{playing ? '⏸' : '▶'}</button>
+
+                  <button
+                    onClick={() => { setPlaying(false); setDetIdx((i) => Math.min(dets.length - 1, i + 1)) }}
+                    className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-700 hover:bg-slate-600 text-white transition-colors text-sm"
+                    title="Next frame"
+                  >▶</button>
+
+                  {/* Scrubber */}
+                  <input
+                    type="range"
+                    min={0}
+                    max={dets.length - 1}
+                    value={detIdx}
+                    onChange={(e) => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
+                    className="flex-1 accent-brand"
+                  />
+                </div>
+              )}
+
+              <div className="p-4 space-y-4">
+                {/* Metadata grid */}
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    { label: 'Class',       value: <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${classColor(detail.class_label)}`}>{detail.class_label ?? '—'}</span> },
-                    { label: 'Confidence',  value: fmtConfidence(detail.confidence_max) },
-                    { label: 'Camera',      value: detail.camera_name ?? '—' },
-                    { label: 'Detections',  value: detail.detection_count ?? detail.detections?.length ?? '—' },
-                    { label: 'Started',     value: startTime ?? '—' },
-                    { label: 'Ended',       value: endTime ?? '—' },
-                    { label: 'Duration',    value: duration ?? '—' },
-                    { label: 'Frames',      value: detail.first_frame != null ? `${detail.first_frame} – ${detail.last_frame}` : '—' },
+                    { label: 'Class',      value: <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${classColor(detail.class_label)}`}>{detail.class_label ?? '—'}</span> },
+                    { label: 'Confidence', value: fmtConfidence(detail.confidence_max) },
+                    { label: 'Camera',     value: detail.camera_name ?? '—' },
+                    { label: 'Detections', value: dets.length || detail.detection_count || '—' },
+                    { label: 'Started',    value: startTime ?? '—' },
+                    { label: 'Ended',      value: endTime ?? '—' },
+                    { label: 'Duration',   value: duration ?? '—' },
+                    { label: 'Frames',     value: detail.first_frame != null ? `${detail.first_frame} – ${detail.last_frame}` : '—' },
                   ].map(({ label, value }) => (
                     <div key={label} className="bg-slate-800/60 rounded-lg px-3 py-2.5 border border-slate-700">
                       <p className="text-slate-500 text-xs mb-1">{label}</p>
@@ -244,24 +313,22 @@ function TrackDrawer({ trackId, onClose }) {
                   ))}
                 </div>
 
-                {/* Detections timeline */}
-                {detail.detections?.length > 0 && (
+                {/* Detection list — clickable rows */}
+                {dets.length > 0 && (
                   <div>
-                    <h4 className="text-slate-300 text-sm font-medium mb-2">
-                      Detections <span className="text-slate-500 font-normal">({detail.detections.length})</span>
-                    </h4>
+                    <h4 className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-2">Detections</h4>
                     <div className="rounded-lg border border-slate-700 divide-y divide-slate-700/50 overflow-hidden">
-                      {detail.detections.map((d) => (
-                        <div key={d.id} className="flex items-center gap-3 px-3 py-2 text-xs hover:bg-slate-800/60 transition-colors">
+                      {dets.map((d, i) => (
+                        <button
+                          key={d.id}
+                          onClick={() => { setPlaying(false); setDetIdx(i) }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : 'hover:bg-slate-800/60'}`}
+                        >
                           <span className="text-slate-500 font-mono w-16 shrink-0">f {d.frame_index}</span>
-                          <span className="text-slate-300 capitalize flex-1">{d.class_label ?? '—'}</span>
+                          <span className="text-slate-300 flex-1 capitalize">{d.class_label ?? '—'}</span>
                           <span className="text-brand font-mono">{fmtConfidence(d.confidence)}</span>
-                          {d.bbox && (
-                            <span className="text-slate-600 font-mono hidden sm:block">
-                              {d.bbox.w}×{d.bbox.h}
-                            </span>
-                          )}
-                        </div>
+                          {d.bbox && <span className="text-slate-600 font-mono">{d.bbox.w}×{d.bbox.h}</span>}
+                        </button>
                       ))}
                     </div>
                   </div>
