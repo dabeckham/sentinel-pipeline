@@ -111,13 +111,14 @@ def _handle_message(body: bytes):
 
         # Broadcast to WebSocket clients (fire-and-forget — import here to avoid circular)
         try:
-            import asyncio
             from app.api.ws import broadcast
-            event = {"type": "job_update", "job_id": job_id, "status": job.status.value}
-            if is_final:
-                event["completed_at"] = job.completed_at.isoformat()
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
+            from app.services.event_loop import get_loop
+            loop = get_loop()
+            if loop is not None:
+                import asyncio
+                event = {"type": "job_update", "job_id": job_id, "status": job.status.value}
+                if is_final:
+                    event["completed_at"] = job.completed_at.isoformat()
                 asyncio.run_coroutine_threadsafe(broadcast(event), loop)
         except Exception:
             pass  # WebSocket broadcast is best-effort

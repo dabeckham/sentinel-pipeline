@@ -87,16 +87,17 @@ class IngestHandler(FileSystemEventHandler):
 
             # Broadcast to WebSocket clients
             try:
-                import asyncio
                 from app.api.ws import broadcast
-                event = {
-                    "type": "job_update",
-                    "job_id": job.id,
-                    "status": "queued",
-                    "file_path": path,
-                }
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                from app.services.event_loop import get_loop
+                loop = get_loop()
+                if loop is not None:
+                    import asyncio
+                    event = {
+                        "type": "job_update",
+                        "job_id": job.id,
+                        "status": "queued",
+                        "file_path": path,
+                    }
                     asyncio.run_coroutine_threadsafe(broadcast(event), loop)
             except Exception:
                 pass

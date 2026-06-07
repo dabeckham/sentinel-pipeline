@@ -54,8 +54,12 @@ async def lifespan(app: FastAPI):
     recover_stuck_jobs()
     scan_ingest_missed()
 
+    from app.services.event_loop import set_loop
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
+
+    import asyncio
+    set_loop(asyncio.get_event_loop())
 
     observer = start_watcher()
 

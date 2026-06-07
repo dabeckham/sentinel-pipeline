@@ -25,11 +25,11 @@ class Settings(BaseSettings):
     oc_use_gpu: bool = False
 
     # ByteTrack tuning
-    bytetrack_match_threshold: float = 0.8
-    # lost_track_buffer: frames to keep a track alive after last detection.
-    # motion_frame_skip=2 means gaps of 2 frames between detections — 10 is plenty.
-    # Previous value of 90 caused ghost tracks persisting 3 s after object left frame.
-    bytetrack_lost_buffer: int = 10
+    # match_threshold: IoU required to match a detection to an existing track.
+    # 0.3 is the standard default — 0.8 was far too strict and caused track fragmentation.
+    bytetrack_match_threshold: float = 0.3
+    # lost_track_buffer: high enough to survive gaps when object is stationary (no MOG2 output).
+    bytetrack_lost_buffer: int = 60
     bytetrack_min_hits: int = 1
 
     # YOLO class allowlist — only these labels are forwarded to ByteTrack / stored.
