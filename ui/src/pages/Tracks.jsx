@@ -50,7 +50,12 @@ function SnapshotImg({ path, alt = 'snapshot' }) {
 
   useEffect(() => {
     if (!path) return
-    let url = null
+    // Reset on every path change so the old image doesn't linger
+    setBlobUrl(null)
+    setErrored(false)
+
+    let cancelled = false
+    let objectUrl = null
     const token = localStorage.getItem('sentinel_token')
     fetch(`/api/snapshots/${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -60,12 +65,16 @@ function SnapshotImg({ path, alt = 'snapshot' }) {
         return res.blob()
       })
       .then((blob) => {
-        url = URL.createObjectURL(blob)
-        setBlobUrl(url)
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        setBlobUrl(objectUrl)
       })
-      .catch(() => setErrored(true))
+      .catch(() => { if (!cancelled) setErrored(true) })
 
-    return () => { if (url) URL.revokeObjectURL(url) }
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
   }, [path])
 
   if (!path || errored) {
