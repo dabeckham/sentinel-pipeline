@@ -9,6 +9,7 @@ class JobStatus(str, enum.Enum):
     pending = "pending"
     queued = "queued"
     md_processing = "md_processing"
+    md_complete = "md_complete"   # MD finished queuing frames; waiting for OC
     oc_processing = "oc_processing"
     completed = "completed"
     failed = "failed"
@@ -34,4 +35,8 @@ class Job(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
-    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stage timestamps — populated as each phase begins/ends
+    md_started_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    md_completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    oc_started_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at:    Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

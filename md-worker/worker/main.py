@@ -127,6 +127,14 @@ def process_job(msg: dict, ch, method):
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
             )
 
+        # Notify orchestrator that MD has finished queuing all frames
+        ch.basic_publish(
+            exchange="",
+            routing_key=settings.queue_oc_results,
+            body=json.dumps({"job_id": job_id, "md_status": "md_complete"}),
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+        )
+
         log.info("md_job_complete", job_id=job_id, frames_published=len(motion_frames))
         ch.basic_ack(delivery_tag=method.delivery_tag)
 

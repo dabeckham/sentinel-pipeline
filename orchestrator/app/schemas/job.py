@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel
 
 
 class JobResponse(BaseModel):
@@ -10,9 +10,13 @@ class JobResponse(BaseModel):
     camera_name: Optional[str] = None
     recorded_at: Optional[datetime] = None
     created_at: datetime
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    track_count: Optional[int] = None   # populated by list endpoint via subquery
+    # Stage timestamps
+    md_started_at:   Optional[datetime] = None
+    md_completed_at: Optional[datetime] = None
+    oc_started_at:   Optional[datetime] = None
+    completed_at:    Optional[datetime] = None
+    error_message:   Optional[str] = None
+    track_count:     Optional[int] = None   # populated by list endpoint via subquery
 
     model_config = {"from_attributes": True}
 
