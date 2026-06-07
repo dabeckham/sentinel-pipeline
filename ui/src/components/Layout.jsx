@@ -32,9 +32,9 @@ export default function Layout() {
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
-          if (msg.type === 'job_update') {
-            const text = `Job #${msg.job_id} → ${msg.status}`
-            setToast(text)
+          if (msg.type === 'job_update' && (msg.status === 'completed' || msg.status === 'failed' || msg.status === 'dead_letter')) {
+            const icon = msg.status === 'completed' ? '✅' : '❌'
+            setToast(`${icon} Job #${msg.job_id} ${msg.status}`)
             setTimeout(() => setToast(null), 4000)
           }
         } catch (_) {}
