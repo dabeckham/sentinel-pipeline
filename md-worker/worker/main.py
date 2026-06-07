@@ -69,6 +69,7 @@ def process_job(msg: dict, ch, method):
                     "timestamp_ms": mf.timestamp_ms,
                     "bounding_boxes": mf.bounding_boxes,
                     "crops_b64": mf.crops_b64,
+                    "frame_b64": mf.frame_b64,
                     "is_final": is_final,
                     "osd_camera_name": osd_camera_name,
                     "osd_recorded_at": osd_recorded_at,

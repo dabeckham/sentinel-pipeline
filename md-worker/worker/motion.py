@@ -49,7 +49,8 @@ class MotionFrame:
     frame_index: int
     timestamp_ms: int
     bounding_boxes: list[dict]   # [{x, y, w, h}, ...] in original resolution
-    crops_b64: list[str]         # base64-encoded JPEG per bbox (no MinIO round-trip)
+    crops_b64: list[str]         # base64-encoded JPEG per bbox — used by OC for classification
+    frame_b64: str               # base64-encoded JPEG of the full original frame — saved as snapshot
 
 
 def detect_motion(video_path: str) -> list[MotionFrame]:
@@ -152,11 +153,15 @@ def detect_motion(video_path: str) -> list[MotionFrame]:
 
                 if boxes:
                     timestamp_ms = int(frame_index * 1000 / fps)
+                    # Encode full original frame — OC worker saves this as the detection snapshot
+                    ok_f, buf_f = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    frame_b64 = base64.b64encode(buf_f.tobytes()).decode("ascii") if ok_f else ""
                     results.append(MotionFrame(
                         frame_index=frame_index,
                         timestamp_ms=timestamp_ms,
                         bounding_boxes=boxes,
                         crops_b64=crops_b64,
+                        frame_b64=frame_b64,
                     ))
                     motion_boxes_this_frame = boxes
                     last_known_boxes = boxes
