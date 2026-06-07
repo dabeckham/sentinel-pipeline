@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Integer, String, Float, Text, DateTime, ForeignKey
+from sqlalchemy import Integer, String, Float, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
@@ -15,6 +15,7 @@ class Track(Base):
     first_frame: Mapped[int] = mapped_column(Integer, nullable=True)
     last_frame: Mapped[int] = mapped_column(Integer, nullable=True)
     snapshot_path: Mapped[str] = mapped_column(Text, nullable=True)  # MinIO path
+    snapshot_bbox: Mapped[dict] = mapped_column(JSON, nullable=True)  # bbox from best-shot frame
     # Wall-clock timestamps derived from OSD recorded_at + frame offset
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

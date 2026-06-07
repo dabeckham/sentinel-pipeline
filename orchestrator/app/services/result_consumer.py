@@ -119,6 +119,9 @@ def _handle_message(body: bytes):
                         track.ended_at = osd_recorded_at + timedelta(milliseconds=timestamp_ms)
             if snapshot_path:
                 track.snapshot_path = snapshot_path
+            snapshot_bbox = msg.get("snapshot_bbox")
+            if snapshot_bbox:
+                track.snapshot_bbox = snapshot_bbox
 
             db.add(Detection(
                 track_id=track.id,
