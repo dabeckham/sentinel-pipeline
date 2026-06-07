@@ -1,5 +1,5 @@
 # Sentinel Pipeline — Disaster Recovery
-*v0.5.0 — Last updated: 2026-06-06*
+*v0.5.0 — Last updated: 2026-06-07 (session 13)*
 
 ---
 
@@ -8,8 +8,8 @@
 | Data | Location | Criticality | Notes |
 |---|---|---|---|
 | `.env` | `~/sentinel-pipeline/.env` on host | **CRITICAL** | All secrets; if lost, all services fail. Cannot be regenerated — existing DB/MinIO data becomes inaccessible. |
-| PostgreSQL | Docker volume `sentinel_postgres-data` | **Critical** | All job, track, detection metadata. |
-| MinIO snapshots & crops | Docker volume `sentinel_minio-data` | **High** | Frame snapshots. Source videos still on NAS and can be reprocessed. |
+| PostgreSQL | Docker volume `sentinel_postgres-data` | **Critical** | All job, track, detection metadata including snapshot_bbox (best-shot bbox). Alembic migration 0003 must be applied on restore. |
+| MinIO snapshots | Docker volume `sentinel_minio-data` | **High** | `_best.jpg` thumbnails + `_f{frame}.jpg` playback frames. Source videos still on NAS and can be reprocessed (best.jpg will be regenerated; snapshot_bbox will be repopulated). |
 | RabbitMQ state | Docker volume `sentinel_rabbitmq-data` | **Low** | In-flight messages only. Queues auto-recreate on start; lost jobs auto-recover via startup scan. |
 | Source videos | NAS `/volume1/FTP/sentinel-ingest` | **High** | Managed by Synology — configure NAS-side backup separately. |
 | Code | GitHub `dabeckham/sentinel-pipeline` | **None** | Always available from git. |
@@ -123,7 +123,9 @@ Common causes and fixes:
 | DB connection refused | Postgres not ready yet — wait 15s and retry |
 | `socket.gaierror: Temporary failure in name resolution` | oc-worker on wrong network — must start with both compose files |
 | `ACCESS_REFUSED - Login was refused` | oc-worker missing env vars — must start with both compose files |
-| Alembic migration error | `docker compose exec orchestrator alembic upgrade head` |
+| Alembic migration error | `docker exec sentinel-orchestrator bash -c 'cd /app && alembic upgrade head'` |
+| `FileNotFoundError: yolo11s.pt` | Model volume missing — `docker volume create sentinel-pipeline_yolo-models` then restart oc-worker |
+| YOLO model re-downloading every restart | Volume mounted at wrong path — must be at `/app/models` in docker-compose.gpu.yml |
 
 ---
 
@@ -181,8 +183,16 @@ docker run --rm \
   alpine tar xzf /backup/minio_YYYYMMDD.tar.gz -C /
 ```
 
-**Step 3 — Start everything:**
+**Step 3 — Run migrations:**
 ```bash
+docker compose up -d orchestrator
+sleep 10
+docker exec sentinel-orchestrator bash -c 'cd /app && alembic upgrade head'
+```
+
+**Step 4 — Start everything:**
+```bash
+docker volume create sentinel-pipeline_yolo-models   # if not already created
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
@@ -226,8 +236,12 @@ docker exec sentinel-rabbitmq rabbitmqctl set_permissions -p / sentinel ".*" ".*
 **Step 5 — Restore data:**
 Follow Scenario 4 Steps 1–2 above.
 
-**Step 6 — Start stack:**
+**Step 6 — Run migrations and start stack:**
 ```bash
+docker compose up -d orchestrator
+sleep 10
+docker exec sentinel-orchestrator bash -c 'cd /app && alembic upgrade head'
+docker volume create sentinel-pipeline_yolo-models
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
@@ -343,7 +357,7 @@ docker compose exec postgres pg_isready -U sentinel
 
 **Expected healthy state:**
 - All containers: `Up (healthy)` or `Up`
-- `/api/health`: `{"status":"ok","version":"0.5.0",...}`
+- `/api/health`: `{"status":"ok","version":"0.5.0",...}` (alembic head: `0003`)
 - `jobs_processing` and `jobs_queued` drain to 0 over time as backlog clears
 - All `dlx.*` counts: `0`
 
