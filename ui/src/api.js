@@ -36,8 +36,21 @@ export const api = {
   job: (id) => req('GET', `/jobs/${id}`),
   jobTracks: (id) => req('GET', `/jobs/${id}/tracks`),
   tracks: (params = {}) => {
-    const qs = new URLSearchParams(params).toString()
-    return req('GET', `/tracks${qs ? '?' + qs : ''}`)
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach(item => qs.append(k, item))
+      else if (v != null && v !== '') qs.set(k, v)
+    })
+    const s = qs.toString()
+    return req('GET', `/tracks${s ? '?' + s : ''}`)
+  },
+  activeDays: (params = {}) => {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach(item => qs.append(k, item))
+      else if (v != null && v !== '') qs.set(k, v)
+    })
+    return req('GET', `/tracks/active-days?${qs.toString()}`)
   },
   track: (id) => req('GET', `/tracks/${id}`),
   cameras: () => req('GET', '/tracks/cameras'),
