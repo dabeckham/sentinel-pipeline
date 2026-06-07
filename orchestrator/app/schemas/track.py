@@ -36,6 +36,7 @@ class DetectionInTrack(BaseModel):
     class_label: Optional[str] = None
     confidence: Optional[float] = None
     bbox: Optional[dict] = None
+    crop_path: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
