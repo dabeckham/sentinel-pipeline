@@ -1,12 +1,14 @@
 """Job endpoints."""
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.deps import get_current_user, require_viewer
 from app.db import get_db
-from app.models.job import Job
+from app.models.job import Job, JobStatus
 from app.models.track import Track
 from app.models.detection import Detection
 from app.models.user import User
@@ -17,6 +19,20 @@ from app.schemas.detection import DetectionResponse, DetectionListResponse
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+def _job_to_response(job: Job, track_count: int | None = None) -> JobResponse:
+    return JobResponse(
+        id=job.id,
+        file_path=job.file_path,
+        status=job.status,
+        camera_name=job.camera_name,
+        recorded_at=job.recorded_at,
+        created_at=job.created_at,
+        completed_at=job.completed_at,
+        error_message=job.error_message,
+        track_count=track_count,
+    )
+
+
 @router.get("", response_model=JobListResponse)
 def list_jobs(
     status: Optional[str] = Query(None),
@@ -25,11 +41,22 @@ def list_jobs(
     db: Session = Depends(get_db),
     _: User = Depends(require_viewer),
 ):
-    q = db.query(Job)
+    # Subquery: track count per job
+    tc_sq = (
+        select(Track.job_id, func.count(Track.id).label("cnt"))
+        .group_by(Track.job_id)
+        .subquery()
+    )
+
+    q = (
+        db.query(Job, func.coalesce(tc_sq.c.cnt, 0).label("track_count"))
+        .outerjoin(tc_sq, tc_sq.c.job_id == Job.id)
+    )
     if status:
         q = q.filter(Job.status == status)
     total = q.count()
-    items = q.order_by(Job.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    rows = q.order_by(Job.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = [_job_to_response(job, tc) for job, tc in rows]
     return JobListResponse(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -38,7 +65,28 @@ def get_job(job_id: int, db: Session = Depends(get_db), _: User = Depends(requir
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    tc = db.query(func.count(Track.id)).filter(Track.job_id == job_id).scalar()
+    return _job_to_response(job, tc)
+
+
+@router.post("/{job_id}/cancel", response_model=JobResponse)
+def cancel_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark a queued or in-progress job as failed (cancelled by user)."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status in (JobStatus.completed, JobStatus.failed, JobStatus.duplicate):
+        raise HTTPException(status_code=400, detail=f"Job is already {job.status} — cannot cancel")
+    job.status = JobStatus.failed
+    job.error_message = f"Cancelled by {current_user.username}"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    tc = db.query(func.count(Track.id)).filter(Track.job_id == job_id).scalar()
+    return _job_to_response(job, tc)
 
 
 @router.get("/{job_id}/tracks", response_model=TrackListResponse)
