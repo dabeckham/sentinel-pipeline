@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # OC_MODEL_NAME avoids collision with YOLO_MODEL in .env (which may name a future model)
     oc_model_name: str = "yolo11s"
-    oc_confidence_threshold: float = 0.45
+    oc_confidence_threshold: float = 0.85
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
