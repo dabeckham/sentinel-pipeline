@@ -9,16 +9,33 @@ from worker.config import get_settings
 log = structlog.get_logger()
 
 _model: YOLO | None = None
+_allowed_class_ids: list[int] | None = None   # computed once after model load
 
 
 def get_model() -> YOLO:
-    global _model
+    global _model, _allowed_class_ids
     if _model is None:
         s = get_settings()
         log.info("yolo_model_loading", model=s.yolo_model_path)
         _model = YOLO(s.yolo_model_path)
         device = "cuda:0" if s.oc_use_gpu else "cpu"
         _model.to(device)
+
+        # Resolve allowed class names → YOLO class IDs using the model's own name dict.
+        # Empty oc_allowed_classes = allow all (pass None to YOLO).
+        allowed_names = {c.strip().lower() for c in s.oc_allowed_classes.split(",") if c.strip()}
+        if allowed_names:
+            _allowed_class_ids = [
+                cid for cid, name in _model.names.items()
+                if name.lower() in allowed_names
+            ]
+            log.info("yolo_class_filter_active",
+                     allowed_ids=_allowed_class_ids,
+                     allowed_names=sorted(allowed_names))
+        else:
+            _allowed_class_ids = None
+            log.info("yolo_class_filter_disabled")
+
         log.info("yolo_model_ready", device=device)
     return _model
 
@@ -46,7 +63,9 @@ def classify_crop(crop: np.ndarray) -> tuple[str, float]:
     """Run YOLO on a single crop. Returns (class_label, confidence)."""
     s = get_settings()
     model = get_model()
-    results = model(crop, verbose=False, conf=s.oc_confidence_threshold)
+    # _allowed_class_ids is None when no filter configured (YOLO sees all classes)
+    results = model(crop, verbose=False, conf=s.oc_confidence_threshold,
+                    classes=_allowed_class_ids)
     if not results or len(results[0].boxes) == 0:
         return "unknown", 0.0
     boxes = results[0].boxes
@@ -77,15 +96,10 @@ def track_frame(
         class_labels.append(label)
         confidences.append(conf)
 
-    # Build allowed-class set from config (empty = allow all)
-    allowed = {c.strip().lower() for c in s.oc_allowed_classes.split(",") if c.strip()}
-
-    # Filter out low-confidence, unknown, and non-allowed detections before tracking
+    # YOLO already filtered by allowed classes; just drop unknown/low-confidence
     valid = [
         i for i, (label, conf) in enumerate(zip(class_labels, confidences))
-        if label != "unknown"
-        and conf >= s.oc_confidence_threshold
-        and (not allowed or label.lower() in allowed)
+        if label != "unknown" and conf >= s.oc_confidence_threshold
     ]
     if not valid:
         return []
