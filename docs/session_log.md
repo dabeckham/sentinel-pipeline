@@ -164,15 +164,15 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-07 | 8 | Tracked Objects UI polish. Fixed snapshot images not loading (JWT auth — `<img>` can't send headers; switched to fetch+blob URL). Fixed snapshot not filling tile (absolute inset-0 + fixed-height container). Converted side drawer to centered floating modal. Per-detection snapshot storage in oc-worker (`track_{id}_f{frame}.jpg`). Frame-by-frame playback in modal: play/pause, step back/forward, scrubber, frame counter overlay, clickable detection list rows. |
 | 2026-06-08 | 9 | Fixed oc-worker crash loop (setproctitle missing from GPU image — must rebuild with both compose files). Unstuck job #12. MOG2 tuning: var_threshold 16→25, shadows off, merge_dist 30→60, min_contour_area 500→800. Added yolo-models named volume to cache weights. Fixed snapshot playback: SnapshotImg not resetting state on path change, crop_path missing from API response, hasCrops gate for pre-v0.5.1 tracks. Switched to full original frame snapshots (not crops) — MD passes full frame base64 alongside crops; OC saves full frame; crops used only for inference. GitHub issues #18–21 created and closed. |
 | 2026-06-07 | 10 | Jobs page real-time updates: WebSocket connection + 10s polling fallback, elapsed status timer (resets on status change, hidden when complete), Live/Polling indicator. Fixed asyncio broadcast bug: `get_event_loop()` from background thread in Python 3.10+ returns dead loop — fixed with `event_loop.py` storing FastAPI's real loop at startup. Fixed pipeline order: was MOG2 blobs → ByteTrack → YOLO (backwards). Correct: YOLO detects within MOG2 crops → translate bbox to full-frame → ByteTrack. Fixed positional index mapping bug in track_frame (ByteTrack output order ≠ input order — now matched by IoU). ByteTrack: match_threshold 0.8→0.3, lost_buffer 10→60. DB and MinIO cleared for fresh start. |
+| 2026-06-07 | 11 | Major pipeline rework. (1) Replaced OCR entirely with filename parsing — `CAMNAME_NN_YYYYmmddHHMMSS` → camera name + timestamp, per-frame times from FPS. (2) Switched from per-crop YOLO+ByteTrack to `model.track(full_frame, tracker="botsort.yaml")` — BoT-SORT runs on complete frames for full context + appearance ReID. reset_tracker() on is_final separates jobs cleanly. (3) Best-shot thumbnail: OC worker tracks frame where bbox vertical center is closest to frame center, saves as `_best.jpg`, overwrites when better. Per-detection `_f{frame}.jpg` kept for playback. (4) md_processing status: MD worker publishes status ping to oc_results at job start. (5) Jobs page: removed duplicate WS (Layout owns it), adaptive polling 2s/8s with loadRef/dataRef to fix stale closure. Toast only on completed/failed. (6) Fixed year missing from track dates in UI (fmtTime missing `year: 'numeric'`). Issues #26–#33 fixed. DB/store purged twice for fresh testing. |
 
 ---
 
 ## Post-Launch Pipeline Behaviour
 
 - **Motion detection:** MOG2 at 25% scale (640×360), frame_skip=2, var_threshold=25, shadows=off, min_area=800, contours merged by `_merge_boxes(merge_dist=60)` into whole-object bboxes
-- **Classification:** YOLO11s, confidence ≥ 0.85, classes restricted to vehicles/person/animals at inference time (`classes=` param)
-- **Tracking:** ByteTrack on YOLO full-frame bboxes (not MOG2 blobs), match_threshold=0.3, lost_buffer=60 frames
-- **OSD extraction:** pytesseract OCR on bottom 12% of first frame → `jobs.camera_name`, `jobs.recorded_at`
+- **Classification + Tracking:** YOLO11s + BoT-SORT via `model.track(full_frame, tracker="botsort.yaml")`, confidence ≥ 0.85, classes restricted to vehicles/person/animals. Tracker reset between jobs on `is_final`.
+- **Camera metadata:** Parsed from filename — `CAMNAME_NN_YYYYmmddHHMMSS` → camera name + recording start time. No OCR.
 - **Track timestamps:** `tracks.started_at` / `tracks.ended_at` = `recorded_at + frame_offset_ms`
 - **Debug video:** `MD_DEBUG_VIDEO=true` in compose → `_debug.mp4` written to `/ingest/debug/` at 640×360
 
@@ -211,8 +211,8 @@ Frontend fetches with `Authorization: Bearer` header, converts to blob URL (plai
 
 ## What's Next
 
-- **Verify pipeline fix end-to-end** — drop a fresh video, confirm fewer/no duplicate tracks
-- **OSD diagnosis** — run `docker logs sentinel-pipeline-orchestrator-1 2>&1 | grep osd_parsed | tail -10` and share output before any further OCR changes
+- **Verify BoT-SORT tracking quality** — drop fresh videos, confirm track count per object is 1 (or close)
+- **Cleanup job** — API/script to delete `_f{frame}.jpg` files keeping only `_best.jpg` per track
 - **Bbox overlay on full frames** — draw bbox rectangle on snapshots in UI (coordinates stored in DB)
 - **Phase 6:** RTSP live stream worker pool
 - **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
