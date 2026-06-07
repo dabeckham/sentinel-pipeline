@@ -30,7 +30,7 @@ function ElapsedTimer({ sinceMs }) {
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [])
-  const secs  = Math.floor((now - sinceMs) / 1000)
+  const secs  = Math.max(0, Math.floor((now - sinceMs) / 1000))
   const h     = Math.floor(secs / 3600)
   const m     = Math.floor((secs % 3600) / 60)
   const s     = secs % 60
@@ -47,41 +47,36 @@ function fmt(dt) {
   return new Date(dt).toLocaleString()
 }
 
-function WsIndicator({ connected }) {
-  return (
-    <span className={`flex items-center gap-1.5 text-xs ${connected ? 'text-green-400' : 'text-slate-500'}`}>
-      <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 animate-pulse' : 'bg-slate-600'}`} />
-      {connected ? 'Live' : 'Polling'}
-    </span>
-  )
-}
-
 const PAGE_SIZE = 25
 
 export default function Jobs() {
-  const [data, setData]                   = useState(null)
-  const [page, setPage]                   = useState(1)
-  const [statusFilter, setStatusFilter]   = useState('')
-  const [loading, setLoading]             = useState(true)
-  const [wsConnected, setWsConnected]     = useState(false)
-  // job_id → timestamp (ms) of last status change
-  const [statusSince, setStatusSince]     = useState({})
-  const wsRef   = useRef(null)
+  const [data, setData]                 = useState(null)
+  const [page, setPage]                 = useState(1)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [loading, setLoading]           = useState(true)
+  // job_id → timestamp (ms) when it entered its current status
+  const [statusSince, setStatusSince]   = useState({})
+  const prevStatusRef = useRef({})  // job_id → last known status (for change detection)
   const pollRef = useRef(null)
 
-  // ── Data fetching ────────────────────────────────────────────────────────────
-  const load = useCallback(async (p = page, s = statusFilter) => {
-    setLoading(true)
+  const load = useCallback(async () => {
     try {
-      const res = await api.jobs(p, PAGE_SIZE, s)
+      const res = await api.jobs(page, PAGE_SIZE, statusFilter)
       setData(res)
-      // Seed statusSince for newly loaded jobs: use created_at as baseline
+
+      // Track status-change timestamps
       setStatusSince((prev) => {
         const next = { ...prev }
         for (const job of res.items) {
-          if (!(job.id in next)) {
-            next[job.id] = new Date(job.created_at).getTime()
+          const lastStatus = prevStatusRef.current[job.id]
+          if (lastStatus === undefined) {
+            // First time seeing this job — use created_at as baseline
+            if (!(job.id in next)) next[job.id] = new Date(job.created_at).getTime()
+          } else if (lastStatus !== job.status) {
+            // Status changed between polls — reset timer
+            next[job.id] = Date.now()
           }
+          prevStatusRef.current[job.id] = job.status
         }
         return next
       })
@@ -90,93 +85,39 @@ export default function Jobs() {
     }
   }, [page, statusFilter])
 
-  // ── Patch a single job row in state (from WS event) ──────────────────────────
-  const patchJob = useCallback((event) => {
-    setData((prev) => {
-      if (!prev) return prev
-      const idx = prev.items.findIndex((j) => j.id === event.job_id)
-      if (idx === -1) {
-        load()
-        return prev
-      }
-      const items = [...prev.items]
-      const changed = items[idx].status !== event.status
-      items[idx] = {
-        ...items[idx],
-        status: event.status,
-        ...(event.completed_at ? { completed_at: event.completed_at } : {}),
-        ...(event.file_path    ? { filename: event.file_path }        : {}),
-      }
-      if (changed) {
-        setStatusSince((prev2) => ({ ...prev2, [event.job_id]: Date.now() }))
-      }
-      return { ...prev, items }
-    })
-  }, [load])
-
-  // ── WebSocket connection ──────────────────────────────────────────────────────
-  const connectWs = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
-
-    const token = localStorage.getItem('sentinel_token')
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws/jobs?token=${token}`)
-
-    ws.onopen = () => {
-      setWsConnected(true)
-      clearInterval(pollRef.current)
-    }
-
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data)
-        if (msg.type === 'job_update') patchJob(msg)
-        if (msg.type === 'heartbeat') ws.send('ping')
-      } catch (_) {}
-    }
-
-    ws.onclose = () => {
-      setWsConnected(false)
-      wsRef.current = null
-      startPolling()
-      setTimeout(connectWs, 5000)
-    }
-
-    ws.onerror = () => ws.close()
-    wsRef.current = ws
-  }, [patchJob])
-
-  // ── Polling fallback ─────────────────────────────────────────────────────────
-  const startPolling = useCallback(() => {
-    clearInterval(pollRef.current)
-    pollRef.current = setInterval(() => load(), 5000)
-  }, [load])
-
-  // ── Mount / unmount ──────────────────────────────────────────────────────────
+  // Poll at 2s when there are active jobs, 8s otherwise
   useEffect(() => {
     load()
-    connectWs()
-    const slowPoll = setInterval(() => load(), 10000)
-    return () => {
-      clearInterval(slowPoll)
-      clearInterval(pollRef.current)
-      wsRef.current?.close()
+    const tick = () => {
+      const hasActive = data?.items?.some((j) => ACTIVE_STATUSES.has(j.status))
+      pollRef.current = setTimeout(async () => {
+        await load()
+        tick()
+      }, hasActive ? 2000 : 8000)
     }
+    tick()
+    return () => clearTimeout(pollRef.current)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reload on filter/page change
   useEffect(() => { load() }, [page, statusFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 1
+  const hasActive  = data?.items?.some((j) => ACTIVE_STATUSES.has(j.status))
 
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold text-white">Jobs</h2>
-          {data && <p className="text-slate-400 text-sm mt-1">{data.total} total</p>}
+          {data && (
+            <p className="text-slate-400 text-sm mt-1">
+              {data.total} total
+              {hasActive && <span className="ml-2 text-yellow-400 animate-pulse">● processing</span>}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-3">
-          <WsIndicator connected={wsConnected} />
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
@@ -190,7 +131,7 @@ export default function Jobs() {
             <option value="failed">Failed</option>
           </select>
           <button
-            onClick={() => load()}
+            onClick={load}
             className="bg-slate-700 hover:bg-slate-600 text-white text-sm px-3 py-1.5 rounded-md transition-colors"
           >
             Refresh
@@ -209,14 +150,10 @@ export default function Jobs() {
           </thead>
           <tbody>
             {loading && !data && (
-              <tr>
-                <td colSpan={7} className="text-center text-slate-400 py-8">Loading…</td>
-              </tr>
+              <tr><td colSpan={7} className="text-center text-slate-400 py-8">Loading…</td></tr>
             )}
             {!loading && data?.items?.length === 0 && (
-              <tr>
-                <td colSpan={7} className="text-center text-slate-400 py-8">No jobs found</td>
-              </tr>
+              <tr><td colSpan={7} className="text-center text-slate-400 py-8">No jobs found</td></tr>
             )}
             {data?.items?.map((job) => {
               const active = ACTIVE_STATUSES.has(job.status)
