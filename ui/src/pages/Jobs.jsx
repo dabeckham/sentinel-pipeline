@@ -202,61 +202,146 @@ function KillButton({ jobId, onKilled }) {
   )
 }
 
-const PAGE_SIZE = 25
+// ── Constants ─────────────────────────────────────────────────────────────────
+const PAGE_SIZE     = 50
 const DEFAULT_WIDTHS = { ID: 60, Camera: 130, File: 240, Status: 160, 'In status': 110, Created: 170, Completed: 170, Tracks: 70, Actions: 100 }
 
+// ── Main component ────────────────────────────────────────────────────────────
 export default function Jobs() {
-  const [data, setData]                 = useState(null)
-  const [page, setPage]                 = useState(1)
+  const [items, setItems]               = useState([])
+  const [total, setTotal]               = useState(null)
+  const [hasMore, setHasMore]           = useState(true)
+  const [nextPage, setNextPage]         = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
-  const [loading, setLoading]           = useState(true)
+  const [initialLoading, setInitialLoading] = useState(true)
+  const [loadingMore, setLoadingMore]   = useState(false)
   const [colWidths, setColWidths]       = useState(DEFAULT_WIDTHS)
   const [statusSince, setStatusSince]   = useState({})
-  const prevStatusRef = useRef({})
-  const pollRef  = useRef(null)
-  const loadRef  = useRef(null)
-  const dataRef  = useRef(null)
 
-  const load = useCallback(async () => {
-    try {
-      const res = await api.jobs(page, PAGE_SIZE, statusFilter)
-      dataRef.current = res
-      setData(res)
-      setStatusSince(prev => {
-        const next = { ...prev }
-        for (const job of res.items) {
-          const lastStatus = prevStatusRef.current[job.id]
-          if (lastStatus === undefined) {
-            if (!(job.id in next)) next[job.id] = new Date(job.created_at).getTime()
-          } else if (lastStatus !== job.status) {
-            next[job.id] = Date.now()
-          }
-          prevStatusRef.current[job.id] = job.status
+  const prevStatusRef   = useRef({})
+  const pollRef         = useRef(null)
+  const sentinelRef     = useRef(null)       // bottom of table — triggers load more
+  const loadedCountRef  = useRef(0)          // how many items we've loaded so far
+  const filterRef       = useRef(statusFilter)
+  const hasMoreRef      = useRef(true)
+  const nextPageRef     = useRef(1)
+  const loadingMoreRef  = useRef(false)
+
+  // keep refs in sync
+  filterRef.current    = statusFilter
+  hasMoreRef.current   = hasMore
+  nextPageRef.current  = nextPage
+  loadingMoreRef.current = loadingMore
+
+  // ── Merge status-since tracking ───────────────────────────────────────────
+  const mergeStatusSince = useCallback((newItems) => {
+    setStatusSince(prev => {
+      const next = { ...prev }
+      for (const job of newItems) {
+        const lastStatus = prevStatusRef.current[job.id]
+        if (lastStatus === undefined) {
+          if (!(job.id in next)) next[job.id] = new Date(job.created_at).getTime()
+        } else if (lastStatus !== job.status) {
+          next[job.id] = Date.now()
         }
-        return next
-      })
+        prevStatusRef.current[job.id] = job.status
+      }
+      return next
+    })
+  }, [])
+
+  // ── Initial / filter-change load ──────────────────────────────────────────
+  const loadFirst = useCallback(async (filter) => {
+    setInitialLoading(true)
+    setItems([])
+    setHasMore(true)
+    setNextPage(1)
+    loadedCountRef.current = 0
+    prevStatusRef.current = {}
+    try {
+      const res = await api.jobs(1, PAGE_SIZE, filter)
+      setItems(res.items)
+      setTotal(res.total)
+      const more = res.items.length === PAGE_SIZE && res.total > PAGE_SIZE
+      setHasMore(more)
+      setNextPage(2)
+      loadedCountRef.current = res.items.length
+      mergeStatusSince(res.items)
     } finally {
-      setLoading(false)
+      setInitialLoading(false)
     }
-  }, [page, statusFilter])
+  }, [mergeStatusSince])
 
-  loadRef.current = load
+  // ── Load next page (scroll-triggered) ────────────────────────────────────
+  const loadMore = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMoreRef.current) return
+    setLoadingMore(true)
+    try {
+      const res = await api.jobs(nextPageRef.current, PAGE_SIZE, filterRef.current)
+      setItems(prev => {
+        const merged = [...prev, ...res.items]
+        loadedCountRef.current = merged.length
+        return merged
+      })
+      setTotal(res.total)
+      const more = res.items.length === PAGE_SIZE && nextPageRef.current * PAGE_SIZE < res.total
+      setHasMore(more)
+      setNextPage(p => p + 1)
+      mergeStatusSince(res.items)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [mergeStatusSince])
 
+  // ── Poll refresh — reload all visible items in one shot ───────────────────
+  const pollRefresh = useCallback(async () => {
+    const count  = Math.max(PAGE_SIZE, loadedCountRef.current)
+    const filter = filterRef.current
+    try {
+      const res = await api.jobs(1, count, filter)
+      // Only update if filter hasn't changed mid-flight
+      if (filterRef.current !== filter) return
+      setItems(res.items)
+      setTotal(res.total)
+      loadedCountRef.current = res.items.length
+      const more = res.total > res.items.length
+      setHasMore(more)
+      setNextPage(Math.floor(res.items.length / PAGE_SIZE) + 1)
+      mergeStatusSince(res.items)
+    } catch (_) { /* silent on poll errors */ }
+  }, [mergeStatusSince])
+
+  // ── Filter changes → reset ────────────────────────────────────────────────
   useEffect(() => {
-    loadRef.current()
-    const tick = () => {
-      const hasActive = dataRef.current?.items?.some(j => ACTIVE_STATUSES.has(j.status))
-      pollRef.current = setTimeout(async () => { await loadRef.current(); tick() }, hasActive ? 2000 : 8000)
-    }
-    tick()
+    clearTimeout(pollRef.current)
+    loadFirst(statusFilter).then(() => {
+      const tick = () => {
+        pollRef.current = setTimeout(async () => {
+          await pollRefresh()
+          tick()
+        }, loadedCountRef.current > 0 && items.some?.(j => ACTIVE_STATUSES.has(j.status)) ? 2000 : 6000)
+      }
+      tick()
+    })
     return () => clearTimeout(pollRef.current)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [statusFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { loadRef.current() }, [page, statusFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Separate ref-based poll interval using items to detect active
+  const hasActive = items.some(j => ACTIVE_STATUSES.has(j.status))
 
-  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 1
-  const hasActive  = data?.items?.some(j => ACTIVE_STATUSES.has(j.status))
+  // ── IntersectionObserver on sentinel div ──────────────────────────────────
+  useEffect(() => {
+    const el = sentinelRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) loadMore() },
+      { rootMargin: '200px' }
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [loadMore])
 
+  // ── Column resize ─────────────────────────────────────────────────────────
   const resizeCol = (col, delta) => {
     setColWidths(prev => ({ ...prev, [col]: Math.max(50, (prev[col] ?? 120) + delta) }))
   }
@@ -265,12 +350,16 @@ export default function Jobs() {
 
   return (
     <div className="p-8">
+      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-2xl font-bold text-white">Jobs</h2>
-          {data && (
+          {total !== null && (
             <p className="text-slate-400 text-sm mt-1">
-              {data.total} total
+              {items.length < total
+                ? <span>{items.length} of {total} loaded</span>
+                : <span>{total} total</span>
+              }
               {hasActive && <span className="ml-2 text-yellow-400 animate-pulse">● processing</span>}
             </p>
           )}
@@ -278,7 +367,7 @@ export default function Jobs() {
         <div className="flex items-center gap-3">
           <select
             value={statusFilter}
-            onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+            onChange={e => setStatusFilter(e.target.value)}
             className="bg-slate-800 border border-slate-600 text-slate-300 text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand"
           >
             <option value="">All statuses</option>
@@ -289,7 +378,7 @@ export default function Jobs() {
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
           </select>
-          <button onClick={load}
+          <button onClick={() => loadFirst(statusFilter)}
             className="bg-slate-700 hover:bg-slate-600 text-white text-sm px-3 py-1.5 rounded-md transition-colors">
             Refresh
           </button>
@@ -301,6 +390,7 @@ export default function Jobs() {
         </div>
       </div>
 
+      {/* Table */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-x-auto">
         <table className="text-sm" style={{ tableLayout: 'fixed', width: `${Object.values(colWidths).reduce((a, b) => a + b, 0)}px`, minWidth: '100%' }}>
           <colgroup>
@@ -317,13 +407,13 @@ export default function Jobs() {
             </tr>
           </thead>
           <tbody>
-            {loading && !data && (
+            {initialLoading && (
               <tr><td colSpan={cols.length} className="text-center text-slate-400 py-8">Loading…</td></tr>
             )}
-            {!loading && data?.items?.length === 0 && (
+            {!initialLoading && items.length === 0 && (
               <tr><td colSpan={cols.length} className="text-center text-slate-400 py-8">No jobs found</td></tr>
             )}
-            {data?.items?.map(job => {
+            {items.map(job => {
               const active = ACTIVE_STATUSES.has(job.status)
               const done   = DONE_STATUSES.has(job.status)
               const since  = statusSince[job.id]
@@ -345,7 +435,7 @@ export default function Jobs() {
                   <td className="px-4 py-3 text-slate-400 truncate">{fmt(job.completed_at)}</td>
                   <td className="px-4 py-3 text-slate-400 tabular-nums">{job.track_count ?? '—'}</td>
                   <td className="px-4 py-3">
-                    {active && <KillButton jobId={job.id} onKilled={load} />}
+                    {active && <KillButton jobId={job.id} onKilled={() => loadFirst(statusFilter)} />}
                     {job.status === 'failed' && job.error_message && (
                       <span className="text-xs text-red-400 truncate block" title={job.error_message}>
                         {job.error_message.length > 22 ? job.error_message.slice(0, 22) + '…' : job.error_message}
@@ -357,6 +447,21 @@ export default function Jobs() {
             })}
           </tbody>
         </table>
+
+        {/* Infinite scroll sentinel */}
+        <div ref={sentinelRef} className="h-1" />
+
+        {/* Load-more indicator */}
+        {loadingMore && (
+          <div className="flex justify-center py-4">
+            <span className="text-slate-500 text-sm animate-pulse">Loading more…</span>
+          </div>
+        )}
+        {!hasMore && items.length > 0 && total !== null && items.length >= total && (
+          <div className="flex justify-center py-3">
+            <span className="text-slate-600 text-xs">All {total} jobs loaded</span>
+          </div>
+        )}
       </div>
 
       {/* Status legend */}
@@ -377,20 +482,6 @@ export default function Jobs() {
         ))}
         <span className="text-slate-600 text-xs ml-2">· hover status for timeline</span>
       </div>
-
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 mt-4">
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-            className="px-3 py-1.5 bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-md disabled:opacity-40 hover:bg-slate-700 transition-colors">
-            ← Prev
-          </button>
-          <span className="text-slate-400 text-sm">Page {page} / {totalPages}</span>
-          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-            className="px-3 py-1.5 bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-md disabled:opacity-40 hover:bg-slate-700 transition-colors">
-            Next →
-          </button>
-        </div>
-      )}
     </div>
   )
 }
