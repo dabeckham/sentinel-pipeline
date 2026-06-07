@@ -47,6 +47,14 @@ def process_job(msg: dict, ch, method):
     log.info("md_job_start", job_id=job_id, video_path=video_path)
 
     try:
+        # Notify orchestrator that MD processing has started
+        ch.basic_publish(
+            exchange="",
+            routing_key=settings.queue_oc_results,
+            body=json.dumps({"job_id": job_id, "md_status": "md_processing"}),
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+        )
+
         # OCR the first frame for OSD timestamp + camera name before running MOG2
         first_frame, video_fps = _read_first_frame(video_path)
         osd = read_osd(first_frame) if first_frame is not None else None
