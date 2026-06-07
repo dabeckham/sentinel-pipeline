@@ -112,15 +112,25 @@ def process_frame(msg: dict, ch, method):
         for det in detections:
             track_id = det["track_id"]
             crop_idx = det["crop_idx"]
-            snapshot_path = None
+            track_snapshot_path = None
+            det_crop_path = None
 
+            # Per-detection crop — saved for every frame so UI can step through them
+            det_name = f"{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg"
+            try:
+                upload_snapshot(settings.minio_bucket_snapshots, det_name, crops[crop_idx])
+                det_crop_path = det_name
+            except Exception:
+                log.exception("oc_det_snapshot_error", job_id=job_id, track_id=track_id, frame=frame_index)
+
+            # Track thumbnail — first detection only, used as the card thumbnail
             key = (job_id, track_id)
             if key not in _snapshot_uploaded:
                 _snapshot_uploaded[key] = True
-                snap_name = f"{job_id}/track_{track_id:06d}.jpg"
+                track_snap_name = f"{job_id}/track_{track_id:06d}.jpg"
                 try:
-                    upload_snapshot(settings.minio_bucket_snapshots, snap_name, crops[crop_idx])
-                    snapshot_path = snap_name
+                    upload_snapshot(settings.minio_bucket_snapshots, track_snap_name, crops[crop_idx])
+                    track_snapshot_path = track_snap_name
                 except Exception:
                     log.exception("oc_snapshot_upload_error", job_id=job_id, track_id=track_id)
 
@@ -135,7 +145,8 @@ def process_frame(msg: dict, ch, method):
                     "class_label": det["class_label"],
                     "confidence": det["confidence"],
                     "bbox": det["bbox"],
-                    "snapshot_path": snapshot_path,
+                    "snapshot_path": track_snapshot_path,
+                    "crop_path": det_crop_path,
                     "is_final": False,
                     "osd_camera_name": osd_camera_name,
                     "osd_recorded_at": osd_recorded_at,
