@@ -34,6 +34,7 @@ export const api = {
   jobs: (page = 1, pageSize = 25, status = '') =>
     req('GET', `/jobs?page=${page}&page_size=${pageSize}${status ? `&status=${status}` : ''}`),
   job: (id) => req('GET', `/jobs/${id}`),
+  cancelJob: (id) => req('POST', `/jobs/${id}/cancel`),
   jobTracks: (id) => req('GET', `/jobs/${id}/tracks`),
   tracks: (params = {}) => {
     const qs = new URLSearchParams()
