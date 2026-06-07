@@ -53,6 +53,7 @@ def process_frame(msg: dict, ch, method):
     timestamp_ms = msg["timestamp_ms"]
     bboxes = msg.get("bounding_boxes", [])
     crops_b64 = msg.get("crops_b64", [])
+    frame_b64 = msg.get("frame_b64", "")  # full original frame for saving as snapshot
     is_final = msg.get("is_final", False)
 
     # OSD metadata passed through from md-worker
@@ -107,6 +108,9 @@ def process_frame(msg: dict, ch, method):
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
+        # Decode full frame once — reused for all detections in this frame
+        full_frame = _decode_crop(frame_b64) if frame_b64 else None
+
         detections = track_frame(job_id, valid_bboxes, crops)
 
         for det in detections:
@@ -115,10 +119,11 @@ def process_frame(msg: dict, ch, method):
             track_snapshot_path = None
             det_crop_path = None
 
-            # Per-detection crop — saved for every frame so UI can step through them
+            # Per-detection snapshot — full original frame (crop used only for OC classification)
+            snapshot_img = full_frame if full_frame is not None else crops[crop_idx]
             det_name = f"{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg"
             try:
-                upload_snapshot(settings.minio_bucket_snapshots, det_name, crops[crop_idx])
+                upload_snapshot(settings.minio_bucket_snapshots, det_name, snapshot_img)
                 det_crop_path = det_name
             except Exception:
                 log.exception("oc_det_snapshot_error", job_id=job_id, track_id=track_id, frame=frame_index)
@@ -129,7 +134,7 @@ def process_frame(msg: dict, ch, method):
                 _snapshot_uploaded[key] = True
                 track_snap_name = f"{job_id}/track_{track_id:06d}.jpg"
                 try:
-                    upload_snapshot(settings.minio_bucket_snapshots, track_snap_name, crops[crop_idx])
+                    upload_snapshot(settings.minio_bucket_snapshots, track_snap_name, snapshot_img)
                     track_snapshot_path = track_snap_name
                 except Exception:
                     log.exception("oc_snapshot_upload_error", job_id=job_id, track_id=track_id)
