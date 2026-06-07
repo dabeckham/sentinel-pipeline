@@ -139,6 +139,7 @@ def get_track(
                 "class_label": d.class_label,
                 "confidence": d.confidence,
                 "bbox": d.bbox,
+                "crop_path": d.crop_path,
             }
             for d in detections
         ],
