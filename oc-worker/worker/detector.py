@@ -77,10 +77,15 @@ def track_frame(
         class_labels.append(label)
         confidences.append(conf)
 
-    # Filter out low-confidence / unknown detections before tracking
+    # Build allowed-class set from config (empty = allow all)
+    allowed = {c.strip().lower() for c in s.oc_allowed_classes.split(",") if c.strip()}
+
+    # Filter out low-confidence, unknown, and non-allowed detections before tracking
     valid = [
         i for i, (label, conf) in enumerate(zip(class_labels, confidences))
-        if label != "unknown" and conf >= s.oc_confidence_threshold
+        if label != "unknown"
+        and conf >= s.oc_confidence_threshold
+        and (not allowed or label.lower() in allowed)
     ]
     if not valid:
         return []

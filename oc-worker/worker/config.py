@@ -25,13 +25,21 @@ class Settings(BaseSettings):
     oc_use_gpu: bool = False
 
     # ByteTrack tuning
-    # match_threshold: IoU required to associate a detection with an existing track.
-    # Default 0.8 works well once dilation gives stable whole-object bboxes.
     bytetrack_match_threshold: float = 0.8
-    # lost_track_buffer: frames to hold a lost track before dropping it.
-    # Raised from default 30 to survive motion_frame_skip=2 gaps at 30fps.
-    bytetrack_lost_buffer: int = 90
+    # lost_track_buffer: frames to keep a track alive after last detection.
+    # motion_frame_skip=2 means gaps of 2 frames between detections — 10 is plenty.
+    # Previous value of 90 caused ghost tracks persisting 3 s after object left frame.
+    bytetrack_lost_buffer: int = 10
     bytetrack_min_hits: int = 1
+
+    # YOLO class allowlist — only these labels are forwarded to ByteTrack / stored.
+    # Comma-separated. Empty string = allow all (not recommended).
+    # COCO vehicles + person + common animals.
+    oc_allowed_classes: str = (
+        "person,"
+        "bicycle,car,motorcycle,airplane,bus,train,truck,boat,"
+        "bird,cat,dog,horse,sheep,cow,elephant,bear,zebra,giraffe"
+    )
 
     def rabbitmq_params(self):
         import pika
