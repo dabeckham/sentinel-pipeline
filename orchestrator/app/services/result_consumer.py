@@ -6,7 +6,7 @@ import json
 import time
 import pika
 import structlog
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -41,6 +41,17 @@ def _handle_message(body: bytes):
     bbox = msg.get("bbox")
     snapshot_path = msg.get("snapshot_path")
     is_final = msg.get("is_final", False)
+    osd_camera_name = msg.get("osd_camera_name")
+    osd_recorded_at_str = msg.get("osd_recorded_at")
+    timestamp_ms = msg.get("timestamp_ms", 0)
+
+    # Parse OSD recorded_at ISO string once
+    osd_recorded_at: datetime | None = None
+    if osd_recorded_at_str:
+        try:
+            osd_recorded_at = datetime.fromisoformat(osd_recorded_at_str).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
 
     db = SessionLocal()
     try:
@@ -53,6 +64,12 @@ def _handle_message(body: bytes):
         if job.status == JobStatus.queued:
             job.status = JobStatus.oc_processing
 
+        # Save OSD metadata to job on first result that carries it
+        if osd_camera_name and job.camera_name is None:
+            job.camera_name = osd_camera_name
+        if osd_recorded_at and job.recorded_at is None:
+            job.recorded_at = osd_recorded_at
+
         if track_id is not None:
             track = _get_or_create_track(db, job_id, track_id)
 
@@ -64,8 +81,14 @@ def _handle_message(body: bytes):
             if frame_index is not None:
                 if track.first_frame is None or frame_index < track.first_frame:
                     track.first_frame = frame_index
+                    # Compute wall-clock start time if OSD timestamp available
+                    if osd_recorded_at:
+                        track.started_at = osd_recorded_at + timedelta(milliseconds=timestamp_ms)
                 if track.last_frame is None or frame_index > track.last_frame:
                     track.last_frame = frame_index
+                    # Update wall-clock end time with each new latest frame
+                    if osd_recorded_at:
+                        track.ended_at = osd_recorded_at + timedelta(milliseconds=timestamp_ms)
             if snapshot_path and track.snapshot_path is None:
                 track.snapshot_path = snapshot_path
 

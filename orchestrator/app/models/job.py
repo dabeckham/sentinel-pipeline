@@ -26,6 +26,9 @@ class Job(Base):
         Enum(JobStatus), default=JobStatus.pending, nullable=False, index=True
     )
     error_message: Mapped[str] = mapped_column(Text, nullable=True)
+    # OSD metadata extracted from first frame via OCR (may be None if OSD not found)
+    camera_name: Mapped[str] = mapped_column(String(128), nullable=True, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

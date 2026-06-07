@@ -8,6 +8,7 @@ import setproctitle
 
 from worker.config import get_settings
 from worker.motion import detect_motion
+from worker.osd_reader import read_osd
 
 log = structlog.get_logger()
 
@@ -27,6 +28,18 @@ def _connect(settings) -> tuple[pika.BlockingConnection, any]:
     raise RuntimeError("Could not connect to RabbitMQ")
 
 
+def _read_first_frame(video_path: str):
+    """Return (first_frame_ndarray, fps) or (None, 30.0) if video can't be opened."""
+    import cv2 as _cv2
+    cap = _cv2.VideoCapture(video_path)
+    try:
+        fps = cap.get(_cv2.CAP_PROP_FPS) or 30.0
+        ret, frame = cap.read()
+        return (frame if ret else None), fps
+    finally:
+        cap.release()
+
+
 def process_job(msg: dict, ch, method):
     settings = get_settings()
     job_id = msg["job_id"]
@@ -34,6 +47,12 @@ def process_job(msg: dict, ch, method):
     log.info("md_job_start", job_id=job_id, video_path=video_path)
 
     try:
+        # OCR the first frame for OSD timestamp + camera name before running MOG2
+        first_frame, video_fps = _read_first_frame(video_path)
+        osd = read_osd(first_frame) if first_frame is not None else None
+        osd_camera_name = osd.camera_name if osd else None
+        osd_recorded_at = osd.recorded_at.isoformat() if (osd and osd.recorded_at) else None
+
         motion_frames = detect_motion(video_path)
         log.info("md_motion_detected", job_id=job_id, motion_frames=len(motion_frames))
 
@@ -51,6 +70,9 @@ def process_job(msg: dict, ch, method):
                     "bounding_boxes": mf.bounding_boxes,
                     "crops_b64": mf.crops_b64,
                     "is_final": is_final,
+                    "osd_camera_name": osd_camera_name,
+                    "osd_recorded_at": osd_recorded_at,
+                    "video_fps": video_fps,
                 }),
                 properties=pika.BasicProperties(
                     delivery_mode=2,
@@ -70,6 +92,9 @@ def process_job(msg: dict, ch, method):
                     "bounding_boxes": [],
                     "crops_b64": [],
                     "is_final": True,
+                    "osd_camera_name": osd_camera_name,
+                    "osd_recorded_at": osd_recorded_at,
+                    "video_fps": video_fps,
                 }),
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
             )

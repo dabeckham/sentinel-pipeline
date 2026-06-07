@@ -55,6 +55,11 @@ def process_frame(msg: dict, ch, method):
     crops_b64 = msg.get("crops_b64", [])
     is_final = msg.get("is_final", False)
 
+    # OSD metadata passed through from md-worker
+    osd_camera_name = msg.get("osd_camera_name")
+    osd_recorded_at = msg.get("osd_recorded_at")   # ISO datetime string or None
+    video_fps = msg.get("video_fps", 30.0)
+
     try:
         if not bboxes or not crops_b64:
             # No motion in this frame — just propagate is_final
@@ -62,7 +67,12 @@ def process_frame(msg: dict, ch, method):
                 ch.basic_publish(
                     exchange="",
                     routing_key=settings.queue_oc_results,
-                    body=json.dumps({"job_id": job_id, "is_final": True}),
+                    body=json.dumps({
+                        "job_id": job_id,
+                        "is_final": True,
+                        "osd_camera_name": osd_camera_name,
+                        "osd_recorded_at": osd_recorded_at,
+                    }),
                     properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
                 )
                 release_tracker(job_id)
@@ -85,7 +95,12 @@ def process_frame(msg: dict, ch, method):
                 ch.basic_publish(
                     exchange="",
                     routing_key=settings.queue_oc_results,
-                    body=json.dumps({"job_id": job_id, "is_final": True}),
+                    body=json.dumps({
+                        "job_id": job_id,
+                        "is_final": True,
+                        "osd_camera_name": osd_camera_name,
+                        "osd_recorded_at": osd_recorded_at,
+                    }),
                     properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
                 )
                 release_tracker(job_id)
@@ -122,6 +137,8 @@ def process_frame(msg: dict, ch, method):
                     "bbox": det["bbox"],
                     "snapshot_path": snapshot_path,
                     "is_final": False,
+                    "osd_camera_name": osd_camera_name,
+                    "osd_recorded_at": osd_recorded_at,
                 }),
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
             )
@@ -130,7 +147,12 @@ def process_frame(msg: dict, ch, method):
             ch.basic_publish(
                 exchange="",
                 routing_key=settings.queue_oc_results,
-                body=json.dumps({"job_id": job_id, "is_final": True}),
+                body=json.dumps({
+                    "job_id": job_id,
+                    "is_final": True,
+                    "osd_camera_name": osd_camera_name,
+                    "osd_recorded_at": osd_recorded_at,
+                }),
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
             )
             release_tracker(job_id)

@@ -15,6 +15,9 @@ class Track(Base):
     first_frame: Mapped[int] = mapped_column(Integer, nullable=True)
     last_frame: Mapped[int] = mapped_column(Integer, nullable=True)
     snapshot_path: Mapped[str] = mapped_column(Text, nullable=True)  # MinIO path
+    # Wall-clock timestamps derived from OSD recorded_at + frame offset
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
