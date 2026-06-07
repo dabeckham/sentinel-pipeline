@@ -12,7 +12,13 @@ class TrackResponse(BaseModel):
     first_frame: Optional[int] = None
     last_frame: Optional[int] = None
     snapshot_path: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
     created_at: datetime
+    # Joined from jobs table
+    camera_name: Optional[str] = None
+    # Computed
+    detection_count: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -22,3 +28,17 @@ class TrackListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class DetectionInTrack(BaseModel):
+    id: int
+    frame_index: int
+    class_label: Optional[str] = None
+    confidence: Optional[float] = None
+    bbox: Optional[dict] = None
+
+    model_config = {"from_attributes": True}
+
+
+class TrackDetailResponse(TrackResponse):
+    detections: list[DetectionInTrack] = []
