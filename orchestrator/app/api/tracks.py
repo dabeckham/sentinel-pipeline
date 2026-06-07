@@ -1,5 +1,6 @@
-"""Track endpoints — list, detail, camera list."""
-from datetime import datetime
+"""Track endpoints — list, detail, camera list, active-days calendar."""
+from calendar import monthrange
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,10 +41,10 @@ def _track_to_response(track: Track, camera_name: str | None, detection_count: i
 @router.get("", response_model=TrackListResponse)
 def list_tracks(
     job_id: Optional[int] = Query(None),
-    class_label: Optional[str] = Query(None),
-    camera: Optional[str] = Query(None, description="Filter by camera name (jobs.camera_name)"),
-    from_dt: Optional[datetime] = Query(None, description="Filter tracks started at or after this time"),
-    to_dt: Optional[datetime] = Query(None, description="Filter tracks started at or before this time"),
+    class_label: list[str] = Query(default=[]),
+    camera: list[str] = Query(default=[]),
+    from_dt: Optional[datetime] = Query(None, description="Filter tracks started at or after this time (ISO)"),
+    to_dt: Optional[datetime] = Query(None, description="Filter tracks started at or before this time (ISO)"),
     sort: str = Query("newest", description="Sort order: newest | oldest | confidence | class"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -67,9 +68,9 @@ def list_tracks(
     if job_id:
         q = q.filter(Track.job_id == job_id)
     if class_label:
-        q = q.filter(Track.class_label == class_label)
+        q = q.filter(Track.class_label.in_(class_label))
     if camera:
-        q = q.filter(Job.camera_name == camera)
+        q = q.filter(Job.camera_name.in_(camera))
     if from_dt:
         q = q.filter(Track.started_at >= from_dt)
     if to_dt:
@@ -88,6 +89,37 @@ def list_tracks(
 
     items = [_track_to_response(t, cam, cnt, t.snapshot_bbox) for t, cam, cnt in rows]
     return TrackListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/active-days", response_model=list[str])
+def active_days(
+    year: int = Query(..., description="Calendar year"),
+    month: int = Query(..., ge=1, le=12, description="Calendar month (1–12)"),
+    camera: list[str] = Query(default=[]),
+    class_label: list[str] = Query(default=[]),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_viewer),
+):
+    """Return distinct dates (YYYY-MM-DD) that have tracks in the given month,
+    optionally filtered by camera and class — used to highlight calendar days."""
+    last_day = monthrange(year, month)[1]
+    from_dt = datetime(year, month, 1, tzinfo=timezone.utc)
+    to_dt = datetime(year, month, last_day, 23, 59, 59, tzinfo=timezone.utc)
+
+    q = (
+        db.query(func.date(Track.started_at).label("day"))
+        .join(Job, Job.id == Track.job_id)
+        .filter(Track.started_at.isnot(None))
+        .filter(Track.started_at >= from_dt)
+        .filter(Track.started_at <= to_dt)
+    )
+    if camera:
+        q = q.filter(Job.camera_name.in_(camera))
+    if class_label:
+        q = q.filter(Track.class_label.in_(class_label))
+
+    rows = q.distinct().all()
+    return sorted(str(r[0]) for r in rows)
 
 
 @router.get("/cameras", response_model=list[str])
