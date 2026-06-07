@@ -50,9 +50,14 @@ class Settings(BaseSettings):
 
     @property
     def yolo_model_path(self) -> str:
+        import os
         m = self.oc_model_name
         if not m.endswith(".pt"):
             m += ".pt"
+        # Prefer persistent volume location so model isn't re-downloaded on every restart
+        model_dir = "/app/models"
+        if os.path.isdir(model_dir):
+            return os.path.join(model_dir, m)
         return m
 
     class Config:
