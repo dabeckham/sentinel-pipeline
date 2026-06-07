@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # LAN trust (runtime toggle stored in DB; these are defaults)
     lan_trust_cidrs: str = ""
 
+    # Track classification — stationary vs moving
+    # Normalized centroid displacement (first→last detection, divided by avg bbox width)
+    # below this threshold → track_type = "stationary"
+    tracker_min_displacement: float = 0.3
+
     @property
     def database_url(self) -> str:
         return (

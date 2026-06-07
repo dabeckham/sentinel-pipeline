@@ -20,6 +20,7 @@ class TrackResponse(BaseModel):
     # Computed
     detection_count: Optional[int] = None
     snapshot_bbox: Optional[dict] = None   # bbox of first detection — for thumbnail auto-zoom
+    track_type: Optional[str] = None       # moving | stationary
 
     model_config = {"from_attributes": True}
 

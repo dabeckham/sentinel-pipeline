@@ -43,6 +43,7 @@ def list_tracks(
     job_id: Optional[int] = Query(None),
     class_label: list[str] = Query(default=[]),
     camera: list[str] = Query(default=[]),
+    track_type: Optional[str] = Query(None, description="moving | stationary | null (unclassified) — omit for all"),
     from_dt: Optional[datetime] = Query(None, description="Filter tracks started at or after this time (ISO)"),
     to_dt: Optional[datetime] = Query(None, description="Filter tracks started at or before this time (ISO)"),
     sort: str = Query("newest", description="Sort order: newest | oldest | confidence | class"),
@@ -71,6 +72,10 @@ def list_tracks(
         q = q.filter(Track.class_label.in_(class_label))
     if camera:
         q = q.filter(Job.camera_name.in_(camera))
+    if track_type == "null":
+        q = q.filter(Track.track_type.is_(None))
+    elif track_type:
+        q = q.filter(Track.track_type == track_type)
     if from_dt:
         q = q.filter(Track.started_at >= from_dt)
     if to_dt:

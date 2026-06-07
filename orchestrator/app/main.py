@@ -41,7 +41,7 @@ def _seed_admin():
 async def lifespan(app: FastAPI):
     settings = get_settings()
     log.info("sentinel_orchestrator_starting",
-             version="0.5.0",
+             version="0.6.0",
              rabbitmq_host=settings.rabbitmq_host,
              rabbitmq_user=settings.rabbitmq_user,
              ingest_path=settings.ingest_watch_path)
@@ -81,7 +81,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Sentinel Pipeline API",
         description="Distributed video analysis pipeline orchestrator",
-        version="0.5.0",
+        version="0.6.0",
         lifespan=lifespan,
     )
 
