@@ -24,8 +24,10 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
-    # Tracker — "botsort.yaml" or "bytetrack.yaml" (ultralytics built-in configs)
-    tracker_config: str = "botsort.yaml"
+    # Norfair tracker parameters (Frigate defaults)
+    tracker_distance_threshold: float = 2.5   # max normalised distance to match a detection
+    tracker_initialization_delay: int = 0     # frames before a new track is confirmed
+    tracker_hit_counter_max: int = 8          # frames a track survives without a detection
 
     # YOLO class allowlist — only these labels are forwarded to ByteTrack / stored.
     # Comma-separated. Empty string = allow all (not recommended).

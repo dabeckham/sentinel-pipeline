@@ -1,26 +1,82 @@
-"""YOLO + BoT-SORT tracking on full frames.
+"""YOLO detection + Norfair tracking with Frigate's scale-normalized distance function.
 
 Pipeline:
-  MD worker sends full frame when MOG2 detects motion.
-  OC worker runs model.track() on the full frame — YOLO detects objects and
-  BoT-SORT assigns consistent track IDs across frames within a job.
+  MD worker sends full frame when weighted-average motion detector fires.
+  OC worker runs YOLO on the full frame for detections, then feeds them to
+  Norfair which uses a Kalman filter + Frigate's custom distance metric.
 
-Advantages over the previous crop-based approach:
-  - Full frame context → better detection accuracy
-  - BoT-SORT appearance features → consistent IDs across gaps/occlusions
-  - Single model call per frame instead of one call per MOG2 region
+Why Norfair over BoT-SORT:
+  Frigate's distance function normalizes position change by the object's
+  own bounding-box size.  A car moving 200px looks the same as a pedestrian
+  moving 40px relative to their respective sizes.  This dramatically reduces
+  ID switches and track fragmentation on security camera footage where
+  objects vary widely in apparent size and speed.
 """
 import numpy as np
 import structlog
 from ultralytics import YOLO
+from norfair import Detection, Tracker
+from norfair.filter import OptimizedKalmanFilterFactory
 
 from worker.config import get_settings
 
 log = structlog.get_logger()
 
 _model: YOLO | None = None
+_tracker: Tracker | None = None
 _allowed_class_ids: list[int] | None = None
 
+
+# ---------------------------------------------------------------------------
+# Frigate-style scale-normalized distance
+# ---------------------------------------------------------------------------
+
+def _frigate_distance_raw(detection_pts: np.ndarray, estimate_pts: np.ndarray) -> float:
+    """
+    Measure how far a detection is from a tracker estimate, normalised by the
+    estimated object's own dimensions.  Matches Frigate's norfair_tracker.py.
+
+    detection_pts / estimate_pts: shape (2, 2) — [[x1,y1],[x2,y2]]
+    Returns: euclidean norm of a 4-component change vector
+    """
+    estimate_dim   = np.diff(estimate_pts, axis=0).flatten()   # [w, h]
+    detection_dim  = np.diff(detection_pts, axis=0).flatten()  # [w, h]
+
+    # Bottom-centre as the positional anchor
+    detection_pos = np.array([
+        np.average(detection_pts[:, 0]),
+        np.max(detection_pts[:, 1]),
+    ])
+    estimate_pos = np.array([
+        np.average(estimate_pts[:, 0]),
+        np.max(estimate_pts[:, 1]),
+    ])
+
+    # Position delta normalised by estimated width/height
+    pos_delta = (detection_pos - estimate_pos).astype(float)
+    # Guard against zero-size estimates
+    if estimate_dim[0] > 0:
+        pos_delta[0] /= estimate_dim[0]
+    if estimate_dim[1] > 0:
+        pos_delta[1] /= estimate_dim[1]
+
+    # Size ratio change (1.0 = same size, 0.0 = identical)
+    widths  = np.sort([abs(estimate_dim[0]), abs(detection_dim[0])])
+    heights = np.sort([abs(estimate_dim[1]), abs(detection_dim[1])])
+    width_ratio  = (widths[1]  / widths[0]  - 1.0) if widths[0]  > 0 else 0.0
+    height_ratio = (heights[1] / heights[0] - 1.0) if heights[0] > 0 else 0.0
+
+    change = np.array([pos_delta[0], pos_delta[1], width_ratio, height_ratio])
+    return float(np.linalg.norm(change))
+
+
+def _norfair_distance(detection: Detection, tracked_object) -> float:
+    return _frigate_distance_raw(detection.points, tracked_object.estimate)
+
+
+# ---------------------------------------------------------------------------
+# Model + tracker singletons
+# ---------------------------------------------------------------------------
 
 def get_model() -> YOLO:
     global _model, _allowed_class_ids
@@ -47,62 +103,91 @@ def get_model() -> YOLO:
     return _model
 
 
+def _get_tracker() -> Tracker:
+    global _tracker
+    if _tracker is None:
+        s = get_settings()
+        _tracker = Tracker(
+            distance_function=_norfair_distance,
+            distance_threshold=s.tracker_distance_threshold,
+            initialization_delay=s.tracker_initialization_delay,
+            hit_counter_max=s.tracker_hit_counter_max,
+            filter_factory=OptimizedKalmanFilterFactory(R=3.4),
+        )
+        log.info("norfair_tracker_created",
+                 distance_threshold=s.tracker_distance_threshold,
+                 hit_counter_max=s.tracker_hit_counter_max)
+    return _tracker
+
+
 def reset_tracker():
-    """Reset BoT-SORT state between jobs so track IDs restart cleanly."""
-    model = get_model()
-    try:
-        if hasattr(model, 'predictor') and model.predictor is not None:
-            if hasattr(model.predictor, 'trackers') and model.predictor.trackers:
-                model.predictor.trackers[0].reset()
-    except Exception:
-        pass
+    """Reset Norfair tracker between jobs so track IDs restart cleanly."""
+    global _tracker
+    _tracker = None
+    log.info("norfair_tracker_reset")
 
 
-def track_full_frame(
-    full_frame: np.ndarray,
-    video_fps: float = 30.0,
-) -> list[dict]:
+# ---------------------------------------------------------------------------
+# Per-frame tracking
+# ---------------------------------------------------------------------------
+
+def track_full_frame(full_frame: np.ndarray, video_fps: float = 30.0) -> list[dict]:
     """
-    Run YOLO + BoT-SORT on a full frame.
-    Returns list of dicts: {track_id, class_label, confidence, bbox}
-    where bbox is {x, y, w, h} in full-frame pixel coordinates.
+    Run YOLO detection on a full frame, feed detections to Norfair tracker.
+    Returns list of {track_id, class_label, confidence, bbox}.
+    bbox is {x, y, w, h} in full-frame pixel coordinates.
     """
     s = get_settings()
     model = get_model()
+    tracker = _get_tracker()
 
-    results = model.track(
+    # YOLO inference — detect only, no built-in tracking
+    results = model(
         full_frame,
-        persist=True,
-        tracker=s.tracker_config,
         conf=s.oc_confidence_threshold,
         iou=s.oc_iou_threshold,
         classes=_allowed_class_ids,
         verbose=False,
     )
 
-    if not results or results[0].boxes is None:
-        return []
+    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+        tracked = tracker.update(detections=[])
+        return _extract_active(tracked)
 
     boxes = results[0].boxes
-    if boxes.id is None:
-        return []
+    norfair_detections = []
+    box_meta = []  # parallel list: (class_label, confidence)
 
-    detections = []
     for i in range(len(boxes)):
-        track_id  = int(boxes.id[i])
-        class_id  = int(boxes.cls[i])
-        conf      = float(boxes.conf[i])
         x1, y1, x2, y2 = boxes.xyxy[i].tolist()
-        detections.append({
-            "track_id":    track_id,
-            "class_label": model.names[class_id],
-            "confidence":  conf,
-            "bbox": {
-                "x": int(x1),
-                "y": int(y1),
-                "w": int(x2 - x1),
-                "h": int(y2 - y1),
-            },
-        })
+        class_id = int(boxes.cls[i])
+        conf     = float(boxes.conf[i])
+        label    = model.names[class_id]
 
+        # Norfair expects [[x1,y1],[x2,y2]]
+        points = np.array([[x1, y1], [x2, y2]])
+        det = Detection(points=points, label=label, data={"confidence": conf})
+        norfair_detections.append(det)
+        box_meta.append((label, conf))
+
+    tracked = tracker.update(detections=norfair_detections)
+    return _extract_active(tracked)
+
+
+def _extract_active(tracked_objects) -> list[dict]:
+    """Convert Norfair tracked objects to our detection dicts."""
+    detections = []
+    for t in tracked_objects:
+        if t.last_detection is None:
+            continue
+        pts = t.estimate.flatten()
+        x1, y1, x2, y2 = int(pts[0]), int(pts[1]), int(pts[2]), int(pts[3])
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+        detections.append({
+            "track_id":    int(t.global_id),
+            "class_label": t.last_detection.label,
+            "confidence":  t.last_detection.data.get("confidence", 0.0),
+            "bbox": {"x": x1, "y": y1, "w": w, "h": h},
+        })
     return detections
