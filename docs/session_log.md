@@ -165,13 +165,14 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-08 | 9 | Fixed oc-worker crash loop (setproctitle missing from GPU image — must rebuild with both compose files). Unstuck job #12. MOG2 tuning: var_threshold 16→25, shadows off, merge_dist 30→60, min_contour_area 500→800. Added yolo-models named volume to cache weights. Fixed snapshot playback: SnapshotImg not resetting state on path change, crop_path missing from API response, hasCrops gate for pre-v0.5.1 tracks. Switched to full original frame snapshots (not crops) — MD passes full frame base64 alongside crops; OC saves full frame; crops used only for inference. GitHub issues #18–21 created and closed. |
 | 2026-06-07 | 10 | Jobs page real-time updates: WebSocket connection + 10s polling fallback, elapsed status timer (resets on status change, hidden when complete), Live/Polling indicator. Fixed asyncio broadcast bug: `get_event_loop()` from background thread in Python 3.10+ returns dead loop — fixed with `event_loop.py` storing FastAPI's real loop at startup. Fixed pipeline order: was MOG2 blobs → ByteTrack → YOLO (backwards). Correct: YOLO detects within MOG2 crops → translate bbox to full-frame → ByteTrack. Fixed positional index mapping bug in track_frame (ByteTrack output order ≠ input order — now matched by IoU). ByteTrack: match_threshold 0.8→0.3, lost_buffer 10→60. DB and MinIO cleared for fresh start. |
 | 2026-06-07 | 11 | Major pipeline rework. (1) Replaced OCR entirely with filename parsing — `CAMNAME_NN_YYYYmmddHHMMSS` → camera name + timestamp, per-frame times from FPS. (2) Switched from per-crop YOLO+ByteTrack to `model.track(full_frame, tracker="botsort.yaml")` — BoT-SORT runs on complete frames for full context + appearance ReID. reset_tracker() on is_final separates jobs cleanly. (3) Best-shot thumbnail: OC worker tracks frame where bbox vertical center is closest to frame center, saves as `_best.jpg`, overwrites when better. Per-detection `_f{frame}.jpg` kept for playback. (4) md_processing status: MD worker publishes status ping to oc_results at job start. (5) Jobs page: removed duplicate WS (Layout owns it), adaptive polling 2s/8s with loadRef/dataRef to fix stale closure. Toast only on completed/failed. (6) Fixed year missing from track dates in UI (fmtTime missing `year: 'numeric'`). Issues #26–#33 fixed. DB/store purged twice for fresh testing. |
+| 2026-06-07 | 12 | Studied Frigate source in running container. Replaced MOG2 with Frigate's weighted-average motion detector (avg_frame + avg_delta temporal smoothing, background only absorbs after 10 consecutive motion frames, contrast normalization). Replaced BoT-SORT with Norfair 2.3.0 + Frigate's scale-normalized distance function (normalizes position change by object's own bbox size). Fixed Norfair: only emit tracks with live detections this frame (not Kalman-predicted positions — used frame_index tag in Detection.data). Lowered YOLO confidence 0.85→0.5, raised hit_counter_max 8→30. Fixed model weight caching: volume now at /app/models so yolo11s.pt persists across restarts. Added POST /api/snapshots/cleanup to delete _f{frame}.jpg playback frames (keep only _best.jpg). Added ARG CACHEBUST to Dockerfile.gpu for targeted cache busting. Discord/status notifications. |
 
 ---
 
-## Post-Launch Pipeline Behaviour
+## Post-Launch Pipeline Behaviour (session 12)
 
-- **Motion detection:** MOG2 at 25% scale (640×360), frame_skip=2, var_threshold=25, shadows=off, min_area=800, contours merged by `_merge_boxes(merge_dist=60)` into whole-object bboxes
-- **Classification + Tracking:** YOLO11s + BoT-SORT via `model.track(full_frame, tracker="botsort.yaml")`, confidence ≥ 0.85, classes restricted to vehicles/person/animals. Tracker reset between jobs on `is_final`.
+- **Motion detection:** Frigate-style weighted average. `avg_frame` = running background (frame_alpha=0.01). `avg_delta` = temporal smoothing of frame differences (delta_alpha=0.2). Threshold applied to intersection of current delta and avg_delta — single-frame noise ignored. Background only absorbs moving objects after 10 consecutive motion frames. Contrast normalization (4th-96th percentile stretch). Detection at 100px frame height (maintain aspect ratio), merge_dist=10, min_contour_area=10 (motion-frame pixels).
+- **Classification + Tracking:** YOLO11s (model() detect-only, conf≥0.5) + Norfair 2.3.0 with Frigate's scale-normalized distance function (R=3.4, hit_counter_max=30). Only tracks matched to a live YOLO detection this frame are emitted — Kalman predictions don't create DB rows. Tracker reset between jobs on `is_final`.
 - **Camera metadata:** Parsed from filename — `CAMNAME_NN_YYYYmmddHHMMSS` → camera name + recording start time. No OCR.
 - **Track timestamps:** `tracks.started_at` / `tracks.ended_at` = `recorded_at + frame_offset_ms`
 - **Debug video:** `MD_DEBUG_VIDEO=true` in compose → `_debug.mp4` written to `/ingest/debug/` at 640×360
@@ -211,9 +212,9 @@ Frontend fetches with `Authorization: Bearer` header, converts to blob URL (plai
 
 ## What's Next
 
-- **Verify BoT-SORT tracking quality** — drop fresh videos, confirm track count per object is 1 (or close)
-- **Cleanup job** — API/script to delete `_f{frame}.jpg` files keeping only `_best.jpg` per track
-- **Bbox overlay on full frames** — draw bbox rectangle on snapshots in UI (coordinates stored in DB)
+- **Verify Norfair tracking quality** — drop fresh camera footage, confirm track count per object is 1 (or close), check DB for fragmented tracks
+- **Run cleanup** — call `POST /api/snapshots/cleanup` (admin) to delete accumulated `_f{frame}.jpg` playback frames, keeping only `_best.jpg`
+- **Bbox overlay on full frames** — draw bbox rectangle on snapshot thumbnails in UI (coordinates stored in DB)
 - **Phase 6:** RTSP live stream worker pool
 - **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
 
