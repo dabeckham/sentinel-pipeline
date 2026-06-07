@@ -163,6 +163,7 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 | 2026-06-07 | 7 | Post-launch tuning. Issues #13-16: in-memory crops, debug video, watcher loop fix, MOG2 scale. Docker Hub v0.5.0 push. Track fragmentation fix (bbox merging). Ghost track fix (lost_buffer 90→10). YOLO class filter (vehicles/person/animals only). Confidence 0.45→0.85. OSD OCR (pytesseract first-frame timestamp + camera name, alembic migration 0002). Frigate-style Tracked Objects UI (#17): card grid, filters, detail drawer, snapshot proxy. Fixed SSH — was using wrong username `don`, should be `dabeckham`. |
 | 2026-06-07 | 8 | Tracked Objects UI polish. Fixed snapshot images not loading (JWT auth — `<img>` can't send headers; switched to fetch+blob URL). Fixed snapshot not filling tile (absolute inset-0 + fixed-height container). Converted side drawer to centered floating modal. Per-detection snapshot storage in oc-worker (`track_{id}_f{frame}.jpg`). Frame-by-frame playback in modal: play/pause, step back/forward, scrubber, frame counter overlay, clickable detection list rows. |
 | 2026-06-08 | 9 | Fixed oc-worker crash loop (setproctitle missing from GPU image — must rebuild with both compose files). Unstuck job #12. MOG2 tuning: var_threshold 16→25, shadows off, merge_dist 30→60, min_contour_area 500→800. Added yolo-models named volume to cache weights. Fixed snapshot playback: SnapshotImg not resetting state on path change, crop_path missing from API response, hasCrops gate for pre-v0.5.1 tracks. Switched to full original frame snapshots (not crops) — MD passes full frame base64 alongside crops; OC saves full frame; crops used only for inference. GitHub issues #18–21 created and closed. |
+| 2026-06-07 | 10 | Jobs page real-time updates: WebSocket connection + 10s polling fallback, elapsed status timer (resets on status change, hidden when complete), Live/Polling indicator. Fixed asyncio broadcast bug: `get_event_loop()` from background thread in Python 3.10+ returns dead loop — fixed with `event_loop.py` storing FastAPI's real loop at startup. Fixed pipeline order: was MOG2 blobs → ByteTrack → YOLO (backwards). Correct: YOLO detects within MOG2 crops → translate bbox to full-frame → ByteTrack. Fixed positional index mapping bug in track_frame (ByteTrack output order ≠ input order — now matched by IoU). ByteTrack: match_threshold 0.8→0.3, lost_buffer 10→60. DB and MinIO cleared for fresh start. |
 
 ---
 
@@ -170,7 +171,7 @@ Both md-worker and oc-worker install SIGTERM + SIGINT handlers: call `ch.stop_co
 
 - **Motion detection:** MOG2 at 25% scale (640×360), frame_skip=2, var_threshold=25, shadows=off, min_area=800, contours merged by `_merge_boxes(merge_dist=60)` into whole-object bboxes
 - **Classification:** YOLO11s, confidence ≥ 0.85, classes restricted to vehicles/person/animals at inference time (`classes=` param)
-- **Tracking:** ByteTrack, match_threshold=0.8, lost_buffer=10 frames
+- **Tracking:** ByteTrack on YOLO full-frame bboxes (not MOG2 blobs), match_threshold=0.3, lost_buffer=60 frames
 - **OSD extraction:** pytesseract OCR on bottom 12% of first frame → `jobs.camera_name`, `jobs.recorded_at`
 - **Track timestamps:** `tracks.started_at` / `tracks.ended_at` = `recorded_at + frame_offset_ms`
 - **Debug video:** `MD_DEBUG_VIDEO=true` in compose → `_debug.mp4` written to `/ingest/debug/` at 640×360
@@ -210,9 +211,9 @@ Frontend fetches with `Authorization: Bearer` header, converts to blob URL (plai
 
 ## What's Next
 
-- **Test full-frame playback** — drop a new video, confirm modal shows full frames stepping correctly
+- **Verify pipeline fix end-to-end** — drop a fresh video, confirm fewer/no duplicate tracks
+- **OSD diagnosis** — run `docker logs sentinel-pipeline-orchestrator-1 2>&1 | grep osd_parsed | tail -10` and share output before any further OCR changes
 - **Bbox overlay on full frames** — draw bbox rectangle on snapshots in UI (coordinates stored in DB)
-- **OSD accuracy testing** — pytesseract quality depends on camera/font; may need tuning
 - **Phase 6:** RTSP live stream worker pool
 - **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
 
