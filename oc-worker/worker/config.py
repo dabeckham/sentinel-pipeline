@@ -24,13 +24,8 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
-    # ByteTrack tuning
-    # match_threshold: IoU required to match a detection to an existing track.
-    # 0.3 is the standard default — 0.8 was far too strict and caused track fragmentation.
-    bytetrack_match_threshold: float = 0.3
-    # lost_track_buffer: high enough to survive gaps when object is stationary (no MOG2 output).
-    bytetrack_lost_buffer: int = 60
-    bytetrack_min_hits: int = 1
+    # Tracker — "botsort.yaml" or "bytetrack.yaml" (ultralytics built-in configs)
+    tracker_config: str = "botsort.yaml"
 
     # YOLO class allowlist — only these labels are forwarded to ByteTrack / stored.
     # Comma-separated. Empty string = allow all (not recommended).
