@@ -60,6 +60,14 @@ def get_model() -> YOLO:
     if s.oc_use_gpu and engine_path.exists():
         log.info("trt_engine_loading", engine=str(engine_path))
         _model = YOLO(str(engine_path), task="detect")
+        # TRT engines require a warmup inference to initialize internal state
+        # (also populates .names and JIT-compiles the first CUDA kernel)
+        import numpy as np
+        log.info("trt_engine_warmup")
+        _model.predict(
+            np.zeros((s.yolo_imgsz, s.yolo_imgsz, 3), dtype=np.uint8),
+            verbose=False,
+        )
         log.info("trt_engine_ready", engine=str(engine_path))
 
     elif s.oc_use_gpu and not engine_path.exists():
