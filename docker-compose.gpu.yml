@@ -1,8 +1,8 @@
 # GPU override for OC workers — use with:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker oc-worker-2
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker oc-worker-2 oc-worker-3 oc-worker-4
 #
-# oc-worker   → GPU 1 (Sentinel primary, avoids Frigate on GPU 0)
-# oc-worker-2 → GPU 0 (shares with Frigate — monitor VRAM usage)
+# oc-worker, oc-worker-3, oc-worker-4 → GPU 1 (Sentinel primary, 12GB free)
+# oc-worker-2                         → GPU 0 (shares with Frigate — monitor VRAM)
 
 services:
   oc-worker:
@@ -52,6 +52,66 @@ services:
           devices:
             - driver: nvidia
               device_ids: ["0"]
+              capabilities: [gpu]
+
+  # oc-worker-3 and oc-worker-4 — additional workers on GPU 1 (same as primary oc-worker)
+  # GPU 1 runs at ~2% util with one worker — safely fits 4+ workers
+  oc-worker-3:
+    build:
+      context: ./oc-worker
+      dockerfile: Dockerfile.gpu
+    container_name: sentinel-oc-worker-3
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+      - minio
+    env_file: .env
+    networks:
+      - sentinel-net
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MINIO_ENDPOINT: minio:9000
+      WORKER_TYPE: oc
+      OC_USE_GPU: "true"
+      CUDA_VISIBLE_DEVICES: "0"
+      OC_MODEL_NAME: yolo11s
+    volumes:
+      - yolo-models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID:-1}"]
+              capabilities: [gpu]
+
+  oc-worker-4:
+    build:
+      context: ./oc-worker
+      dockerfile: Dockerfile.gpu
+    container_name: sentinel-oc-worker-4
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+      - minio
+    env_file: .env
+    networks:
+      - sentinel-net
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      MINIO_ENDPOINT: minio:9000
+      WORKER_TYPE: oc
+      OC_USE_GPU: "true"
+      CUDA_VISIBLE_DEVICES: "0"
+      OC_MODEL_NAME: yolo11s
+    volumes:
+      - yolo-models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID:-1}"]
               capabilities: [gpu]
 
 networks:

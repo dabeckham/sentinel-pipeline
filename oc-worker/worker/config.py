@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
-    # Norfair tracker parameters (Frigate defaults)
-    tracker_distance_threshold: float = 2.5   # max normalised distance to match a detection
+    # Norfair tracker parameters
+    # distance_function = iou_opt (vectorized IoU — 0.0=perfect overlap, 1.0=no overlap)
+    tracker_distance_threshold: float = 0.7   # associate if IoU > 0.3 (= distance < 0.7)
     tracker_initialization_delay: int = 2     # consecutive hits before a new track is confirmed (eliminates single-frame ghosts)
     tracker_hit_counter_max: int = 30         # frames a track survives without a detection (sparse motion frames need more)
 
