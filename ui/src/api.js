@@ -34,7 +34,12 @@ export const api = {
   jobs: (page = 1, pageSize = 25, status = '') =>
     req('GET', `/jobs?page=${page}&page_size=${pageSize}${status ? `&status=${status}` : ''}`),
   job: (id) => req('GET', `/jobs/${id}`),
-  cancelJob: (id) => req('POST', `/jobs/${id}/cancel`),
+  cancelJob:  (id) => req('POST',   `/jobs/${id}/cancel`),
+  pauseJob:   (id) => req('POST',   `/jobs/${id}/pause`),
+  resumeJob:  (id) => req('POST',   `/jobs/${id}/resume`),
+  removeJob:  (id) => req('DELETE', `/jobs/${id}`),
+  bulkPause:  ()   => req('POST',   '/jobs/bulk/pause'),
+  bulkKill:   ()   => req('POST',   '/jobs/bulk/kill'),
   jobTracks: (id) => req('GET', `/jobs/${id}/tracks`),
   tracks: (params = {}) => {
     const qs = new URLSearchParams()

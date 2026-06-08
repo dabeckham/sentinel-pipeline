@@ -10,10 +10,11 @@ const STATUS_COLORS = {
   motion_processing: 'bg-yellow-900/50 text-yellow-300 border-yellow-700',
   failed:            'bg-red-900/50 text-red-300 border-red-700',
   dead_letter:       'bg-red-900/50 text-red-300 border-red-700',
+  paused:            'bg-orange-900/50 text-orange-300 border-orange-700',
 }
 
 const ACTIVE_STATUSES = new Set(['queued', 'md_processing', 'md_complete', 'motion_processing', 'oc_processing'])
-const DONE_STATUSES   = new Set(['completed', 'failed', 'dead_letter'])
+const DONE_STATUSES   = new Set(['completed', 'failed', 'dead_letter', 'paused'])
 
 // ── Stage timeline data ───────────────────────────────────────────────────────
 function buildTimeline(job) {
@@ -169,38 +170,28 @@ function ResizerHandle({ onDrag }) {
   )
 }
 
-// ── Kill confirmation button ──────────────────────────────────────────────────
-function KillButton({ jobId, onKilled }) {
-  const [confirm, setConfirm] = useState(false)
-  const [busy,    setBusy]    = useState(false)
+// ── Single action button with confirm guard ───────────────────────────────────
+function ActionButton({ label, title, colorClass, onClick, confirm: needsConfirm = false }) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
 
-  const handleKill = async () => {
+  const fire = async e => {
+    e.stopPropagation()
+    if (needsConfirm && !confirming) { setConfirming(true); return }
     setBusy(true)
-    try {
-      await api.cancelJob(jobId)
-      onKilled()
-    } catch (err) {
-      alert(`Failed to cancel job: ${err.message}`)
-    } finally {
-      setBusy(false)
-      setConfirm(false)
-    }
+    try { await onClick() }
+    finally { setBusy(false); setConfirming(false) }
   }
 
-  if (confirm) {
+  if (confirming) {
     return (
       <span className="flex items-center gap-1">
-        <button
-          onClick={handleKill}
-          disabled={busy}
-          className="text-xs px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50"
-        >
-          {busy ? '…' : 'Kill'}
+        <button onClick={fire} disabled={busy}
+          className="text-xs px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50">
+          {busy ? '…' : 'Sure?'}
         </button>
-        <button
-          onClick={() => setConfirm(false)}
-          className="text-xs px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
-        >
+        <button onClick={e => { e.stopPropagation(); setConfirming(false) }}
+          className="text-xs px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors">
           No
         </button>
       </span>
@@ -208,19 +199,83 @@ function KillButton({ jobId, onKilled }) {
   }
 
   return (
-    <button
-      onClick={e => { e.stopPropagation(); setConfirm(true) }}
-      title="Cancel this job"
-      className="text-xs px-2 py-0.5 border border-red-700/50 text-red-400 hover:bg-red-900/40 rounded transition-colors"
-    >
-      ✕ Kill
+    <button onClick={fire} title={title} disabled={busy}
+      className={`text-xs px-2 py-0.5 border rounded transition-colors disabled:opacity-50 ${colorClass}`}>
+      {busy ? '…' : label}
     </button>
   )
 }
 
+// ── Bulk action bar ───────────────────────────────────────────────────────────
+function BulkActions({ onRefresh }) {
+  const [confirmKill, setConfirmKill] = useState(false)
+  const [busy, setBusy] = useState(null)  // 'pause' | 'kill' | null
+
+  const doPause = async () => {
+    setBusy('pause')
+    try {
+      const r = await api.bulkPause()
+      onRefresh()
+      alert(`Paused ${r.paused} job(s)`)
+    } catch (err) {
+      alert(`Failed: ${err.message}`)
+    } finally { setBusy(null) }
+  }
+
+  const doKill = async () => {
+    if (!confirmKill) { setConfirmKill(true); return }
+    setBusy('kill')
+    setConfirmKill(false)
+    try {
+      const r = await api.bulkKill()
+      onRefresh()
+      alert(`Killed ${r.killed} job(s)`)
+    } catch (err) {
+      alert(`Failed: ${err.message}`)
+    } finally { setBusy(null) }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-slate-500 text-xs">Bulk:</span>
+
+      <button
+        onClick={doPause}
+        disabled={busy !== null}
+        className="text-xs px-3 py-1.5 border border-orange-700/50 text-orange-400 hover:bg-orange-900/30 rounded-md transition-colors disabled:opacity-50"
+        title="Pause all queued/pending jobs"
+      >
+        {busy === 'pause' ? '…' : '⏸ Pause All'}
+      </button>
+
+      {confirmKill ? (
+        <span className="flex items-center gap-1">
+          <button onClick={doKill} disabled={busy !== null}
+            className="text-xs px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-md transition-colors disabled:opacity-50">
+            {busy === 'kill' ? '…' : 'Kill All — confirm'}
+          </button>
+          <button onClick={() => setConfirmKill(false)}
+            className="text-xs px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-md transition-colors">
+            No
+          </button>
+        </span>
+      ) : (
+        <button
+          onClick={doKill}
+          disabled={busy !== null}
+          className="text-xs px-3 py-1.5 border border-red-700/50 text-red-400 hover:bg-red-900/30 rounded-md transition-colors disabled:opacity-50"
+          title="Cancel all active jobs (queued, processing, paused)"
+        >
+          ✕ Kill All
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
-const PAGE_SIZE     = 50
-const DEFAULT_WIDTHS = { ID: 60, Camera: 130, File: 240, Status: 160, 'In status': 110, Created: 170, Completed: 170, Tracks: 70, Actions: 100 }
+const PAGE_SIZE      = 50
+const DEFAULT_WIDTHS = { ID: 60, Camera: 130, File: 240, Status: 160, 'In status': 110, Created: 170, Completed: 170, Tracks: 70, Actions: 170 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function Jobs() {
@@ -236,20 +291,18 @@ export default function Jobs() {
 
   const prevStatusRef   = useRef({})
   const pollRef         = useRef(null)
-  const sentinelRef     = useRef(null)       // bottom of table — triggers load more
-  const loadedCountRef  = useRef(0)          // how many items we've loaded so far
+  const sentinelRef     = useRef(null)
+  const loadedCountRef  = useRef(0)
   const filterRef       = useRef(statusFilter)
   const hasMoreRef      = useRef(true)
   const nextPageRef     = useRef(1)
   const loadingMoreRef  = useRef(false)
 
-  // keep refs in sync
   filterRef.current    = statusFilter
   hasMoreRef.current   = hasMore
   nextPageRef.current  = nextPage
   loadingMoreRef.current = loadingMore
 
-  // ── Merge status-since tracking ───────────────────────────────────────────
   const mergeStatusSince = useCallback((newItems) => {
     setStatusSince(prev => {
       const next = { ...prev }
@@ -266,7 +319,6 @@ export default function Jobs() {
     })
   }, [])
 
-  // ── Initial / filter-change load ──────────────────────────────────────────
   const loadFirst = useCallback(async (filter) => {
     setInitialLoading(true)
     setItems([])
@@ -288,7 +340,6 @@ export default function Jobs() {
     }
   }, [mergeStatusSince])
 
-  // ── Load next page (scroll-triggered) ────────────────────────────────────
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMoreRef.current) return
     setLoadingMore(true)
@@ -309,13 +360,11 @@ export default function Jobs() {
     }
   }, [mergeStatusSince])
 
-  // ── Poll refresh — reload all visible items in one shot ───────────────────
   const pollRefresh = useCallback(async () => {
     const count  = Math.max(PAGE_SIZE, loadedCountRef.current)
     const filter = filterRef.current
     try {
       const res = await api.jobs(1, count, filter)
-      // Only update if filter hasn't changed mid-flight
       if (filterRef.current !== filter) return
       setItems(res.items)
       setTotal(res.total)
@@ -327,7 +376,6 @@ export default function Jobs() {
     } catch (_) { /* silent on poll errors */ }
   }, [mergeStatusSince])
 
-  // ── Filter changes → reset ────────────────────────────────────────────────
   useEffect(() => {
     clearTimeout(pollRef.current)
     loadFirst(statusFilter).then(() => {
@@ -342,10 +390,8 @@ export default function Jobs() {
     return () => clearTimeout(pollRef.current)
   }, [statusFilter]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Separate ref-based poll interval using items to detect active
   const hasActive = items.some(j => ACTIVE_STATUSES.has(j.status))
 
-  // ── IntersectionObserver on sentinel div ──────────────────────────────────
   useEffect(() => {
     const el = sentinelRef.current
     if (!el) return
@@ -357,7 +403,6 @@ export default function Jobs() {
     return () => obs.disconnect()
   }, [loadMore])
 
-  // ── Column resize ─────────────────────────────────────────────────────────
   const resizeCol = (col, delta) => {
     setColWidths(prev => ({ ...prev, [col]: Math.max(50, (prev[col] ?? 120) + delta) }))
   }
@@ -367,7 +412,7 @@ export default function Jobs() {
   return (
     <div className="p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-2xl font-bold text-white">Jobs</h2>
           {total !== null && (
@@ -388,6 +433,7 @@ export default function Jobs() {
           >
             <option value="">All statuses</option>
             <option value="queued">Queued</option>
+            <option value="paused">Paused</option>
             <option value="md_processing">MD Processing</option>
             <option value="md_complete">MD Complete</option>
             <option value="oc_processing">OC Processing</option>
@@ -404,6 +450,11 @@ export default function Jobs() {
             Reset cols
           </button>
         </div>
+      </div>
+
+      {/* Bulk actions bar */}
+      <div className="flex items-center gap-4 mb-4 px-1">
+        <BulkActions onRefresh={() => loadFirst(statusFilter)} />
       </div>
 
       {/* Table */}
@@ -430,13 +481,14 @@ export default function Jobs() {
               <tr><td colSpan={cols.length} className="text-center text-slate-400 py-8">No jobs found</td></tr>
             )}
             {items.map(job => {
-              const active = ACTIVE_STATUSES.has(job.status)
-              const done   = DONE_STATUSES.has(job.status)
-              const since  = statusSince[job.id]
+              const active  = ACTIVE_STATUSES.has(job.status)
+              const done    = DONE_STATUSES.has(job.status)
+              const paused  = job.status === 'paused'
+              const since   = statusSince[job.id]
               return (
                 <tr
                   key={job.id}
-                  className={`border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors ${active ? 'bg-slate-700/10' : ''}`}
+                  className={`border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors ${active ? 'bg-slate-700/10' : ''} ${paused ? 'opacity-60' : ''}`}
                 >
                   <td className="px-4 py-3 text-slate-400 font-mono">{job.id}</td>
                   <td className="px-4 py-3 text-slate-300 truncate" title={job.camera_name}>{job.camera_name ?? '—'}</td>
@@ -451,12 +503,7 @@ export default function Jobs() {
                   <td className="px-4 py-3 text-slate-400 truncate">{fmt(job.completed_at)}</td>
                   <td className="px-4 py-3 text-slate-400 tabular-nums">{job.track_count ?? '—'}</td>
                   <td className="px-4 py-3">
-                    {active && <KillButton jobId={job.id} onKilled={() => loadFirst(statusFilter)} />}
-                    {job.status === 'failed' && job.error_message && (
-                      <span className="text-xs text-red-400 truncate block" title={job.error_message}>
-                        {job.error_message.length > 22 ? job.error_message.slice(0, 22) + '…' : job.error_message}
-                      </span>
-                    )}
+                    <JobActions job={job} onChanged={() => loadFirst(statusFilter)} />
                   </td>
                 </tr>
               )
@@ -467,7 +514,6 @@ export default function Jobs() {
         {/* Infinite scroll sentinel */}
         <div ref={sentinelRef} className="h-1" />
 
-        {/* Load-more indicator */}
         {loadingMore && (
           <div className="flex justify-center py-4">
             <span className="text-slate-500 text-sm animate-pulse">Loading more…</span>
@@ -485,6 +531,7 @@ export default function Jobs() {
         <span className="text-slate-600 text-xs">Status guide:</span>
         {[
           ['queued',        'Waiting for MD worker'],
+          ['paused',        'Held — will not process until resumed'],
           ['md_processing', 'MD actively detecting motion'],
           ['md_complete',   'MD done — frames queued for OC'],
           ['oc_processing', 'OC classifying objects'],
@@ -498,6 +545,72 @@ export default function Jobs() {
         ))}
         <span className="text-slate-600 text-xs ml-2">· hover status for timeline</span>
       </div>
+    </div>
+  )
+}
+
+// ── Per-job action buttons ────────────────────────────────────────────────────
+function JobActions({ job, onChanged }) {
+  const status = job.status
+  const active = ACTIVE_STATUSES.has(status)
+
+  const wrap = fn => async () => { await fn(); onChanged() }
+
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {/* Active jobs: pause (if queued) or kill */}
+      {status === 'queued' && (
+        <ActionButton
+          label="⏸"
+          title="Pause this job"
+          colorClass="border-orange-700/50 text-orange-400 hover:bg-orange-900/40"
+          onClick={wrap(() => api.pauseJob(job.id))}
+        />
+      )}
+      {active && (
+        <ActionButton
+          label="✕ Kill"
+          title="Cancel this job"
+          colorClass="border-red-700/50 text-red-400 hover:bg-red-900/40"
+          confirm
+          onClick={wrap(() => api.cancelJob(job.id))}
+        />
+      )}
+
+      {/* Paused: resume or kill */}
+      {status === 'paused' && (
+        <>
+          <ActionButton
+            label="▶ Resume"
+            title="Resume this job"
+            colorClass="border-green-700/50 text-green-400 hover:bg-green-900/40"
+            onClick={wrap(() => api.resumeJob(job.id))}
+          />
+          <ActionButton
+            label="✕"
+            title="Kill this job"
+            colorClass="border-red-700/50 text-red-400 hover:bg-red-900/40"
+            confirm
+            onClick={wrap(() => api.cancelJob(job.id))}
+          />
+        </>
+      )}
+
+      {/* Terminal jobs: show error snippet or remove button */}
+      {(status === 'failed' || status === 'completed' || status === 'duplicate') && (
+        <ActionButton
+          label="🗑"
+          title="Remove this job permanently"
+          colorClass="border-slate-600 text-slate-500 hover:bg-slate-700/50 hover:text-slate-300"
+          confirm
+          onClick={wrap(() => api.removeJob(job.id))}
+        />
+      )}
+      {status === 'failed' && job.error_message && (
+        <span className="text-xs text-red-400 truncate block max-w-[100px]" title={job.error_message}>
+          {job.error_message.length > 18 ? job.error_message.slice(0, 18) + '…' : job.error_message}
+        </span>
+      )}
     </div>
   )
 }

@@ -134,6 +134,9 @@ def _handle_message(body: bytes):
             job = db.query(Job).filter_by(id=job_id).first()
             if not job:
                 return
+            # Drop updates for killed/paused jobs
+            if job.status in (JobStatus.failed, JobStatus.paused):
+                return
             new_status = None
             if msg["md_status"] == "md_processing" and job.status == JobStatus.queued:
                 job.status = JobStatus.md_processing
@@ -191,6 +194,11 @@ def _handle_message(body: bytes):
         job = db.query(Job).filter_by(id=job_id).first()
         if job is None:
             log.error("oc_result_unknown_job", job_id=job_id)
+            return
+
+        # Drop results for jobs that were paused or killed while in flight
+        if job.status in (JobStatus.failed, JobStatus.paused):
+            log.info("oc_result_dropped_inactive", job_id=job_id, status=job.status.value)
             return
 
         if job.status in (JobStatus.queued, JobStatus.md_processing, JobStatus.md_complete):
