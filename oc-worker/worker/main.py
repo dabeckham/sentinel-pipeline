@@ -35,9 +35,11 @@ def _connect(settings) -> tuple[pika.BlockingConnection, any]:
         try:
             conn = pika.BlockingConnection(settings.rabbitmq_params())
             ch = conn.channel()
-            # prefetch_count=4: pre-fetch next messages while current is processing
-            # Keeps the GPU fed without waiting on ack round-trips
-            ch.basic_qos(prefetch_count=4)
+            # prefetch_count=1: pika's BlockingConnection can't process I/O during
+            # a slow callback (YOLO ~200-500ms). With prefetch>1 the socket buffer
+            # fills while we're in YOLO, causing RabbitMQ writer timeouts and
+            # connection drops. 1 = RabbitMQ delivers next message only after ack.
+            ch.basic_qos(prefetch_count=1)
             log.info("oc_worker_amqp_connected")
             return conn, ch
         except pika.exceptions.AMQPConnectionError as exc:
