@@ -8,6 +8,7 @@ from app.models.base import Base
 class JobStatus(str, enum.Enum):
     pending = "pending"
     queued = "queued"
+    paused = "paused"             # manually held; will not be processed until resumed
     md_processing = "md_processing"
     md_complete = "md_complete"   # MD finished queuing frames; waiting for OC
     oc_processing = "oc_processing"
