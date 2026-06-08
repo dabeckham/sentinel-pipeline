@@ -1,21 +1,25 @@
-"""YOLO detection + Norfair tracking with Frigate's scale-normalized distance function.
+"""YOLO detection + Norfair tracking.
 
 Pipeline:
   MD worker sends full frame when weighted-average motion detector fires.
   OC worker runs YOLO on the full frame for detections, then feeds them to
-  Norfair which uses a Kalman filter + Frigate's custom distance metric.
+  Norfair which uses a Kalman filter + vectorized IoU distance function.
 
-Why Norfair over BoT-SORT:
-  Frigate's distance function normalizes position change by the object's
-  own bounding-box size.  A car moving 200px looks the same as a pedestrian
-  moving 40px relative to their respective sizes.  This dramatically reduces
-  ID switches and track fragmentation on security camera footage where
-  objects vary widely in apparent size and speed.
+Distance function: iou_opt
+  Norfair's built-in optimised IoU distance is vectorized (numpy batch) and
+  runs ~10-50x faster than a scalar Python distance function. For security
+  camera footage (objects appear/disappear, varying sizes) IoU overlap is a
+  reliable association signal and avoids the O(N*M) Python loop overhead of
+  the scalar Frigate distance function.
+
+  Threshold is IoU-based: 0.0 = no overlap, 1.0 = perfect overlap.
+  We use distance_threshold=0.7 (= IoU overlap must be > 0.3 to associate).
 """
 import numpy as np
 import structlog
 from ultralytics import YOLO
 from norfair import Detection, Tracker
+from norfair.distances import iou_opt
 from norfair.filter import OptimizedKalmanFilterFactory
 
 from worker.config import get_settings
@@ -25,53 +29,6 @@ log = structlog.get_logger()
 _model: YOLO | None = None
 _tracker: Tracker | None = None
 _allowed_class_ids: list[int] | None = None
-
-
-# ---------------------------------------------------------------------------
-# Frigate-style scale-normalized distance
-# ---------------------------------------------------------------------------
-
-def _frigate_distance_raw(detection_pts: np.ndarray, estimate_pts: np.ndarray) -> float:
-    """
-    Measure how far a detection is from a tracker estimate, normalised by the
-    estimated object's own dimensions.  Matches Frigate's norfair_tracker.py.
-
-    detection_pts / estimate_pts: shape (2, 2) — [[x1,y1],[x2,y2]]
-    Returns: euclidean norm of a 4-component change vector
-    """
-    estimate_dim   = np.diff(estimate_pts, axis=0).flatten()   # [w, h]
-    detection_dim  = np.diff(detection_pts, axis=0).flatten()  # [w, h]
-
-    # Bottom-centre as the positional anchor
-    detection_pos = np.array([
-        np.average(detection_pts[:, 0]),
-        np.max(detection_pts[:, 1]),
-    ])
-    estimate_pos = np.array([
-        np.average(estimate_pts[:, 0]),
-        np.max(estimate_pts[:, 1]),
-    ])
-
-    # Position delta normalised by estimated width/height
-    pos_delta = (detection_pos - estimate_pos).astype(float)
-    # Guard against zero-size estimates
-    if estimate_dim[0] > 0:
-        pos_delta[0] /= estimate_dim[0]
-    if estimate_dim[1] > 0:
-        pos_delta[1] /= estimate_dim[1]
-
-    # Size ratio change (1.0 = same size, 0.0 = identical)
-    widths  = np.sort([abs(estimate_dim[0]), abs(detection_dim[0])])
-    heights = np.sort([abs(estimate_dim[1]), abs(detection_dim[1])])
-    width_ratio  = (widths[1]  / widths[0]  - 1.0) if widths[0]  > 0 else 0.0
-    height_ratio = (heights[1] / heights[0] - 1.0) if heights[0] > 0 else 0.0
-
-    change = np.array([pos_delta[0], pos_delta[1], width_ratio, height_ratio])
-    return float(np.linalg.norm(change))
-
-
-def _norfair_distance(detection: Detection, tracked_object) -> float:
-    return _frigate_distance_raw(detection.points, tracked_object.estimate)
 
 
 # ---------------------------------------------------------------------------
@@ -108,13 +65,14 @@ def _get_tracker() -> Tracker:
     if _tracker is None:
         s = get_settings()
         _tracker = Tracker(
-            distance_function=_norfair_distance,
+            distance_function=iou_opt,             # vectorized — no Python loop per pair
             distance_threshold=s.tracker_distance_threshold,
             initialization_delay=s.tracker_initialization_delay,
             hit_counter_max=s.tracker_hit_counter_max,
             filter_factory=OptimizedKalmanFilterFactory(R=3.4),
         )
         log.info("norfair_tracker_created",
+                 distance_function="iou_opt",
                  distance_threshold=s.tracker_distance_threshold,
                  hit_counter_max=s.tracker_hit_counter_max)
     return _tracker
