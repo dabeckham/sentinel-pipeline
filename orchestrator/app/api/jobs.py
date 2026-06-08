@@ -46,6 +46,45 @@ def _job_to_response(job: Job, track_count: int | None = None) -> JobResponse:
     )
 
 
+# ── Bulk actions (must be declared before /{job_id} wildcard routes) ──────────
+
+@router.post("/bulk/pause", response_model=dict)
+def bulk_pause(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pause all queued/pending jobs."""
+    updated = (
+        db.query(Job)
+        .filter(Job.status.in_([JobStatus.pending, JobStatus.queued]))
+        .update({"status": JobStatus.paused}, synchronize_session=False)
+    )
+    db.commit()
+    return {"paused": updated}
+
+
+@router.post("/bulk/kill", response_model=dict)
+def bulk_kill(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cancel all non-terminal jobs (queued, pending, paused, in-flight)."""
+    killable = list(_ACTIVE) + [JobStatus.paused]
+    now = datetime.now(timezone.utc)
+    updated = (
+        db.query(Job)
+        .filter(Job.status.in_(killable))
+        .update(
+            {"status": JobStatus.failed,
+             "error_message": f"Bulk kill by {current_user.username}",
+             "completed_at": now},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return {"killed": updated}
+
+
 # ── List / get ────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=JobListResponse)
@@ -183,45 +222,6 @@ def remove_job(
     db.delete(job)
     db.commit()
     return None
-
-
-# ── Bulk actions ──────────────────────────────────────────────────────────────
-
-@router.post("/bulk/pause", response_model=dict)
-def bulk_pause(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Pause all queued/pending jobs."""
-    updated = (
-        db.query(Job)
-        .filter(Job.status.in_([JobStatus.pending, JobStatus.queued]))
-        .update({"status": JobStatus.paused}, synchronize_session=False)
-    )
-    db.commit()
-    return {"paused": updated}
-
-
-@router.post("/bulk/kill", response_model=dict)
-def bulk_kill(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Cancel all non-terminal jobs (queued, pending, paused, in-flight)."""
-    killable = list(_ACTIVE) + [JobStatus.paused]
-    now = datetime.now(timezone.utc)
-    updated = (
-        db.query(Job)
-        .filter(Job.status.in_(killable))
-        .update(
-            {"status": JobStatus.failed,
-             "error_message": f"Bulk kill by {current_user.username}",
-             "completed_at": now},
-            synchronize_session=False,
-        )
-    )
-    db.commit()
-    return {"killed": updated}
 
 
 # ── Job sub-resources ─────────────────────────────────────────────────────────
