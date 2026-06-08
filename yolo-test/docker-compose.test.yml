@@ -1,0 +1,22 @@
+services:
+  yolo-test:
+    build: .
+    image: sentinel-yolo-test:latest
+    container_name: sentinel-yolo-test
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_ID:-1}
+      - YOLO_MODEL=/models/yolo11s.pt
+    volumes:
+      # Reuse the model already downloaded by oc-worker — no re-download
+      - oc-worker-models:/models:ro
+      # Videos from the ingest NAS mount
+      - ${INGEST_SOURCE_PATH:-/mnt/ds-one/sentinel-ingest}:/videos:ro
+    # Pass args after `docker compose run yolo-test`:
+    #   docker compose -f yolo-test/docker-compose.test.yml run --rm yolo-test /videos/parsley-gate/2026/06/07/clip.mp4
+    #   docker compose -f yolo-test/docker-compose.test.yml run --rm yolo-test /videos/ --tracker bytetrack --verbose
+
+volumes:
+  oc-worker-models:
+    external: true
+    name: sentinel-pipeline_oc-worker-models
