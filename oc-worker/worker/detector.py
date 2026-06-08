@@ -5,21 +5,19 @@ Pipeline:
   OC worker runs YOLO on the full frame for detections, then feeds them to
   Norfair which uses a Kalman filter + vectorized IoU distance function.
 
-Distance function: iou_opt
-  Norfair's built-in optimised IoU distance is vectorized (numpy batch) and
-  runs ~10-50x faster than a scalar Python distance function. For security
-  camera footage (objects appear/disappear, varying sizes) IoU overlap is a
-  reliable association signal and avoids the O(N*M) Python loop overhead of
-  the scalar Frigate distance function.
+Distance function: "iou_opt" (string)
+  Pass as string so Norfair resolves its own vectorized built-in — passing
+  the imported function object bypasses Norfair's internal type check and
+  silently falls back to the scalar path (triggering a WARNING). The string
+  form uses the numpy-batch path (~10-50x faster than scalar).
 
-  Threshold is IoU-based: 0.0 = no overlap, 1.0 = perfect overlap.
-  We use distance_threshold=0.7 (= IoU overlap must be > 0.3 to associate).
+  Threshold is IoU-based: 0.0 = perfect overlap, 1.0 = no overlap.
+  distance_threshold=0.7 means associate if IoU > 0.3.
 """
 import numpy as np
 import structlog
 from ultralytics import YOLO
 from norfair import Detection, Tracker
-from norfair.distances import iou_opt
 from norfair.filter import OptimizedKalmanFilterFactory
 
 from worker.config import get_settings
@@ -65,7 +63,7 @@ def _get_tracker() -> Tracker:
     if _tracker is None:
         s = get_settings()
         _tracker = Tracker(
-            distance_function=iou_opt,             # vectorized — no Python loop per pair
+            distance_function="iou_opt",           # string — Norfair resolves vectorized built-in
             distance_threshold=s.tracker_distance_threshold,
             initialization_delay=s.tracker_initialization_delay,
             hit_counter_max=s.tracker_hit_counter_max,
