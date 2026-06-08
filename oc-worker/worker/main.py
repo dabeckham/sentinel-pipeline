@@ -170,7 +170,10 @@ def process_frame(msg: dict, ch, method):
 
     except Exception:
         log.exception("oc_frame_error", job_id=job_id, frame_index=frame_index)
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        try:
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        except Exception:
+            pass  # channel may already be closed — reconnect loop will handle it
 
 
 def _cleanup_best_shots(job_id: int):
@@ -212,7 +215,10 @@ def main():
             process_frame(msg, ch, method)
         except Exception:
             log.exception("oc_message_parse_error")
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            try:
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            except Exception:
+                pass  # channel may already be closed
 
     ch.basic_consume(queue=settings.queue_motion_results, on_message_callback=on_message)
     log.info("oc_worker_consuming", queue=settings.queue_motion_results, worker_id=WORKER_ID)
@@ -220,11 +226,16 @@ def main():
     while not _shutdown:
         try:
             ch.start_consuming()
-        except pika.exceptions.AMQPConnectionError:
+        except (pika.exceptions.AMQPConnectionError, pika.exceptions.AMQPError,
+                pika.exceptions.StreamLostError, pika.exceptions.ChannelWrongStateError):
             if _shutdown:
                 break
             log.warning("oc_worker_reconnecting", worker_id=WORKER_ID)
             time.sleep(5)
+            try:
+                conn.close()
+            except Exception:
+                pass
             conn, ch = _connect(settings)
             ch.basic_consume(queue=settings.queue_motion_results, on_message_callback=on_message)
 

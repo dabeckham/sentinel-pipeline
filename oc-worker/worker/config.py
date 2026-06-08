@@ -46,7 +46,7 @@ class Settings(BaseSettings):
             port=self.rabbitmq_port,
             virtual_host=self.rabbitmq_vhost,
             credentials=pika.PlainCredentials(self.rabbitmq_user, self.rabbitmq_password),
-            heartbeat=60,
+            heartbeat=600,   # 10 min — give YOLO callbacks plenty of room
         )
 
     @property
