@@ -1,6 +1,5 @@
 ultralytics==8.3.0
-supervision==0.22.0
-norfair==2.3.0
+lapx>=0.5.2
 pika==1.3.2
 minio==7.2.9
 pydantic-settings==2.4.0
@@ -8,3 +7,4 @@ structlog==24.4.0
 python-dotenv==1.0.1
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
+setproctitle==1.3.3

@@ -88,49 +88,25 @@ def process_job(msg: dict, ch, method):
         motion_frames = detect_motion(video_path)
         log.info("md_motion_detected", job_id=job_id, motion_frames=len(motion_frames))
 
-        for i, mf in enumerate(motion_frames):
-            is_final = (i == len(motion_frames) - 1)
-
-            # Crops travel in the message body (base64 JPEG) — no MinIO round-trip (issue #13)
-            ch.basic_publish(
-                exchange="",
-                routing_key=settings.queue_motion_results,
-                body=json.dumps({
-                    "job_id": job_id,
-                    "frame_index": mf.frame_index,
-                    "timestamp_ms": mf.timestamp_ms,
-                    "bounding_boxes": mf.bounding_boxes,
-                    "crops_b64": mf.crops_b64,
-                    "frame_b64": mf.frame_b64,
-                    "is_final": is_final,
-                    "osd_camera_name": osd_camera_name,
-                    "osd_recorded_at": osd_recorded_at,
-                    "video_fps": video_fps,
-                }),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,
-                    content_type="application/json",
-                ),
-            )
-
-        if not motion_frames:
-            # No motion detected — still send a final message to close out the job
-            ch.basic_publish(
-                exchange="",
-                routing_key=settings.queue_motion_results,
-                body=json.dumps({
-                    "job_id": job_id,
-                    "frame_index": 0,
-                    "timestamp_ms": 0,
-                    "bounding_boxes": [],
-                    "crops_b64": [],
-                    "is_final": True,
-                    "osd_camera_name": osd_camera_name,
-                    "osd_recorded_at": osd_recorded_at,
-                    "video_fps": video_fps,
-                }),
-                properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
-            )
+        # Publish a single job-descriptor message — OC worker opens the video
+        # locally and seeks to the listed frames.  No frame data in the broker.
+        # One message per job → one OC worker owns all frames → correct tracking.
+        ch.basic_publish(
+            exchange="",
+            routing_key=settings.queue_motion_results,
+            body=json.dumps({
+                "job_id":          job_id,
+                "video_path":      video_path,
+                "motion_frames":   [mf.frame_index for mf in motion_frames],
+                "osd_camera_name": osd_camera_name,
+                "osd_recorded_at": osd_recorded_at,
+                "video_fps":       video_fps,
+            }),
+            properties=pika.BasicProperties(
+                delivery_mode=2,
+                content_type="application/json",
+            ),
+        )
 
         # Notify orchestrator that MD has finished queuing all frames
         ch.basic_publish(
