@@ -138,6 +138,8 @@ def _handle_message(body: bytes):
             if msg["md_status"] == "md_processing" and job.status == JobStatus.queued:
                 job.status = JobStatus.md_processing
                 job.md_started_at = datetime.now(timezone.utc)
+                if msg.get("worker_id"):
+                    job.md_worker_id = msg["worker_id"]
                 new_status = "md_processing"
             elif msg["md_status"] == "md_complete" and job.status == JobStatus.md_processing:
                 job.status = JobStatus.md_complete
@@ -194,6 +196,8 @@ def _handle_message(body: bytes):
         if job.status in (JobStatus.queued, JobStatus.md_processing, JobStatus.md_complete):
             job.status = JobStatus.oc_processing
             job.oc_started_at = datetime.now(timezone.utc)
+            if msg.get("worker_id"):
+                job.oc_worker_id = msg["worker_id"]
 
         # Save OSD metadata to job on first result that carries it
         if osd_camera_name and job.camera_name is None:

@@ -1,13 +1,17 @@
-"""OC Worker — Object Classification + Tracking (YOLO + BoT-SORT)"""
+"""OC Worker — Object Classification + Tracking (YOLO + Norfair)"""
 import base64
 import json
+import os
 import signal
+import socket
 import time
-import pika
-import structlog
-import setproctitle
+from concurrent.futures import ThreadPoolExecutor
+
 import cv2
 import numpy as np
+import pika
+import setproctitle
+import structlog
 
 from worker.config import get_settings
 from worker.detector import track_full_frame, reset_tracker, get_model
@@ -15,9 +19,15 @@ from worker.minio_client import upload_snapshot
 
 log = structlog.get_logger()
 
+# Unique identity for this worker instance
+WORKER_ID = f"{socket.gethostname()}-oc-{os.getpid()}"
+
 # Best-shot tracking: (job_id, track_id) → best score seen so far (lower = better)
 # Score = abs(bbox_center_y / frame_height - 0.5): 0.0 = perfectly centered vertically
 _best_shot_score: dict[tuple[int, int], float] = {}
+
+# Background thread pool for async MinIO uploads (best-shot only)
+_upload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="minio-upload")
 
 
 def _connect(settings) -> tuple[pika.BlockingConnection, any]:
@@ -25,7 +35,9 @@ def _connect(settings) -> tuple[pika.BlockingConnection, any]:
         try:
             conn = pika.BlockingConnection(settings.rabbitmq_params())
             ch = conn.channel()
-            ch.basic_qos(prefetch_count=1)
+            # prefetch_count=4: pre-fetch next messages while current is processing
+            # Keeps the GPU fed without waiting on ack round-trips
+            ch.basic_qos(prefetch_count=4)
             log.info("oc_worker_amqp_connected")
             return conn, ch
         except pika.exceptions.AMQPConnectionError as exc:
@@ -45,6 +57,14 @@ def _decode_frame(b64: str) -> np.ndarray | None:
         return None
 
 
+def _upload_best_shot(bucket: str, name: str, frame: np.ndarray):
+    """Fire-and-forget MinIO upload — runs in background thread pool."""
+    try:
+        upload_snapshot(bucket, name, frame)
+    except Exception:
+        log.exception("oc_best_shot_upload_error", name=name)
+
+
 def _publish_final(ch, settings, job_id, osd_camera_name, osd_recorded_at):
     ch.basic_publish(
         exchange="",
@@ -52,6 +72,7 @@ def _publish_final(ch, settings, job_id, osd_camera_name, osd_recorded_at):
         body=json.dumps({
             "job_id": job_id,
             "is_final": True,
+            "worker_id": WORKER_ID,
             "osd_camera_name": osd_camera_name,
             "osd_recorded_at": osd_recorded_at,
         }),
@@ -60,8 +81,8 @@ def _publish_final(ch, settings, job_id, osd_camera_name, osd_recorded_at):
 
 
 def process_frame(msg: dict, ch, method):
-    settings  = get_settings()
-    job_id    = msg["job_id"]
+    settings     = get_settings()
+    job_id       = msg["job_id"]
     frame_index  = msg["frame_index"]
     timestamp_ms = msg["timestamp_ms"]
     frame_b64    = msg.get("frame_b64", "")
@@ -71,7 +92,6 @@ def process_frame(msg: dict, ch, method):
     video_fps       = msg.get("video_fps", 30.0)
 
     try:
-        # No full frame — nothing to track; propagate is_final if needed
         if not frame_b64:
             if is_final:
                 _publish_final(ch, settings, job_id, osd_camera_name, osd_recorded_at)
@@ -91,52 +111,46 @@ def process_frame(msg: dict, ch, method):
 
         frame_h, frame_w = full_frame.shape[:2]
 
-        # Run YOLO + Norfair on full frame
+        # ── YOLO + Norfair ────────────────────────────────────────────────────
         detections = track_full_frame(full_frame, video_fps, frame_index)
 
         for det in detections:
-            track_id = det["track_id"]
-            bbox     = det["bbox"]
-            key      = (job_id, track_id)
+            track_id  = det["track_id"]
+            bbox      = det["bbox"]
+            key       = (job_id, track_id)
             best_name = f"{job_id}/track_{track_id:06d}_best.jpg"
 
-            # Per-detection full-frame snapshot for playback (tagged _f for future cleanup)
-            det_name = f"{job_id}/track_{track_id:06d}_f{frame_index:06d}.jpg"
-            det_crop_path = None
-            try:
-                upload_snapshot(settings.minio_bucket_snapshots, det_name, full_frame)
-                det_crop_path = det_name
-            except Exception:
-                log.exception("oc_det_snapshot_error", job_id=job_id, track_id=track_id)
-
-            # Best-shot: overwrite _best.jpg when this frame is more vertically centered
+            # Best-shot: update _best.jpg when this frame is more vertically centered.
+            # Upload happens in background — does NOT block the main processing loop.
             bbox_cy = bbox["y"] + bbox["h"] / 2
             score   = abs(bbox_cy / frame_h - 0.5)
             is_best = score < _best_shot_score.get(key, 1.0)
             if is_best:
                 _best_shot_score[key] = score
-                try:
-                    upload_snapshot(settings.minio_bucket_snapshots, best_name, full_frame)
-                except Exception:
-                    log.exception("oc_best_shot_error", job_id=job_id, track_id=track_id)
+                frame_copy = full_frame.copy()   # copy before frame may be GC'd
+                _upload_pool.submit(
+                    _upload_best_shot,
+                    settings.minio_bucket_snapshots,
+                    best_name,
+                    frame_copy,
+                )
 
             ch.basic_publish(
                 exchange="",
                 routing_key=settings.queue_oc_results,
                 body=json.dumps({
-                    "job_id":       job_id,
-                    "track_id":     track_id,
-                    "frame_index":  frame_index,
-                    "timestamp_ms": timestamp_ms,
-                    "class_label":  det["class_label"],
-                    "confidence":   det["confidence"],
-                    "bbox":         bbox,
+                    "job_id":        job_id,
+                    "track_id":      track_id,
+                    "frame_index":   frame_index,
+                    "timestamp_ms":  timestamp_ms,
+                    "class_label":   det["class_label"],
+                    "confidence":    det["confidence"],
+                    "bbox":          bbox,
                     "snapshot_path": best_name,
-                    # snapshot_bbox: only set when this is the new best-shot frame
-                    # so the track stores the bbox that matches the thumbnail
                     "snapshot_bbox": bbox if is_best else None,
-                    "crop_path":    det_crop_path,
-                    "is_final":     False,
+                    "crop_path":     None,   # _f{frame}.jpg removed for throughput
+                    "is_final":      False,
+                    "worker_id":     WORKER_ID,
                     "osd_camera_name": osd_camera_name,
                     "osd_recorded_at": osd_recorded_at,
                 }),
@@ -150,7 +164,8 @@ def process_frame(msg: dict, ch, method):
 
         log.info("oc_frame_processed",
                  job_id=job_id, frame_index=frame_index,
-                 detections=len(detections), is_final=is_final)
+                 detections=len(detections), is_final=is_final,
+                 worker=WORKER_ID)
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
     except Exception:
@@ -164,9 +179,10 @@ def _cleanup_best_shots(job_id: int):
 
 
 def main():
-    setproctitle.setproctitle("sentinel-oc-worker")
+    setproctitle.setproctitle(f"sentinel-oc-worker [{WORKER_ID}]")
     settings = get_settings()
     log.info("oc_worker_starting",
+             worker_id=WORKER_ID,
              rabbitmq_host=settings.rabbitmq_host,
              queue=settings.queue_motion_results,
              gpu=settings.oc_use_gpu,
@@ -180,7 +196,7 @@ def main():
 
     def _handle_sigterm(signum, frame):
         nonlocal _shutdown
-        log.info("oc_worker_sigterm_received")
+        log.info("oc_worker_sigterm_received", worker_id=WORKER_ID)
         _shutdown = True
         try:
             ch.stop_consuming()
@@ -199,7 +215,7 @@ def main():
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     ch.basic_consume(queue=settings.queue_motion_results, on_message_callback=on_message)
-    log.info("oc_worker_consuming", queue=settings.queue_motion_results)
+    log.info("oc_worker_consuming", queue=settings.queue_motion_results, worker_id=WORKER_ID)
 
     while not _shutdown:
         try:
@@ -207,12 +223,13 @@ def main():
         except pika.exceptions.AMQPConnectionError:
             if _shutdown:
                 break
-            log.warning("oc_worker_reconnecting")
+            log.warning("oc_worker_reconnecting", worker_id=WORKER_ID)
             time.sleep(5)
             conn, ch = _connect(settings)
             ch.basic_consume(queue=settings.queue_motion_results, on_message_callback=on_message)
 
-    log.info("oc_worker_stopped")
+    log.info("oc_worker_stopped", worker_id=WORKER_ID)
+    _upload_pool.shutdown(wait=True)   # drain any pending best-shot uploads
     try:
         conn.close()
     except Exception:

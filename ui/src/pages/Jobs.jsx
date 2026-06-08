@@ -70,7 +70,7 @@ function StatusBadge({ status, pulse, job }) {
       </span>
 
       {show && stages.length > 0 && (
-        <div className="absolute left-0 top-full mt-1 z-50 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[260px] pointer-events-none">
+        <div className="absolute left-0 top-full mt-1 z-50 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl p-3 min-w-[300px] pointer-events-none">
           <p className="text-slate-400 text-xs font-semibold mb-2 uppercase tracking-wide">Job #{job.id} Timeline</p>
           <div className="space-y-1">
             {stages.map((s, i) => (
@@ -89,6 +89,22 @@ function StatusBadge({ status, pulse, job }) {
             <div className="mt-2 pt-2 border-t border-slate-700 flex justify-between text-xs">
               <span className="text-slate-500">Total</span>
               <span className="text-white font-mono tabular-nums">{fmtSecs(totalMs)}</span>
+            </div>
+          )}
+          {(job.md_worker_id || job.oc_worker_id) && (
+            <div className="mt-2 pt-2 border-t border-slate-700 space-y-0.5">
+              {job.md_worker_id && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-slate-600 w-16 shrink-0">MD worker</span>
+                  <span className="text-slate-400 font-mono truncate" title={job.md_worker_id}>{job.md_worker_id}</span>
+                </div>
+              )}
+              {job.oc_worker_id && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-slate-600 w-16 shrink-0">OC worker</span>
+                  <span className="text-slate-400 font-mono truncate" title={job.oc_worker_id}>{job.oc_worker_id}</span>
+                </div>
+              )}
             </div>
           )}
           {stages.length === 1 && (

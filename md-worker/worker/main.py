@@ -1,7 +1,9 @@
-"""MD Worker — Motion Detection (MOG2)"""
+"""MD Worker — Motion Detection"""
 import json
+import os
 import re
 import signal
+import socket
 import time
 import pika
 import structlog
@@ -9,6 +11,9 @@ import setproctitle
 import cv2
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Unique identity for this worker instance — survives for the lifetime of the process
+WORKER_ID = f"{socket.gethostname()}-md-{os.getpid()}"
 
 from worker.config import get_settings
 from worker.motion import detect_motion
@@ -71,7 +76,7 @@ def process_job(msg: dict, ch, method):
         ch.basic_publish(
             exchange="",
             routing_key=settings.queue_oc_results,
-            body=json.dumps({"job_id": job_id, "md_status": "md_processing"}),
+            body=json.dumps({"job_id": job_id, "md_status": "md_processing", "worker_id": WORKER_ID}),
             properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
 

@@ -40,3 +40,6 @@ class Job(Base):
     md_completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     oc_started_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at:    Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Worker identity — hostname-type-pid of the worker that handled each stage
+    md_worker_id:    Mapped[str] = mapped_column(String(128), nullable=True)
+    oc_worker_id:    Mapped[str] = mapped_column(String(128), nullable=True)
