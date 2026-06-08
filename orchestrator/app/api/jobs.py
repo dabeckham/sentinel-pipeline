@@ -33,6 +33,8 @@ def _job_to_response(job: Job, track_count: int | None = None) -> JobResponse:
         completed_at=job.completed_at,
         error_message=job.error_message,
         track_count=track_count,
+        md_worker_id=job.md_worker_id,
+        oc_worker_id=job.oc_worker_id,
     )
 
 

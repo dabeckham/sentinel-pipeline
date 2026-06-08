@@ -17,6 +17,9 @@ class JobResponse(BaseModel):
     completed_at:    Optional[datetime] = None
     error_message:   Optional[str] = None
     track_count:     Optional[int] = None   # populated by list endpoint via subquery
+    # Worker identity
+    md_worker_id:    Optional[str] = None
+    oc_worker_id:    Optional[str] = None
 
     model_config = {"from_attributes": True}
 
