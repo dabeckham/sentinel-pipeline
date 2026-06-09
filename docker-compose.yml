@@ -157,13 +157,12 @@ services:
       replicas: 4
 
   # ---------------------------------------------------------------------------
-  # OC Worker — Object Classification (CPU mode)
+  # OC Worker — Object Classification (GPU mode, TRT FP16)
   # ---------------------------------------------------------------------------
   oc-worker:
     build:
       context: ./oc-worker
       dockerfile: Dockerfile
-    container_name: sentinel-oc-worker
     restart: unless-stopped
     depends_on:
       rabbitmq:
@@ -175,12 +174,22 @@ services:
       RABBITMQ_HOST: rabbitmq
       MINIO_ENDPOINT: minio:9000
       WORKER_TYPE: oc
-      OC_USE_GPU: "false"
+      OC_USE_GPU: "true"
+      NVIDIA_VISIBLE_DEVICES: "1"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - yolo-models:/root/.config/Ultralytics
+      - yolo-models:/app/models
       - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     networks:
       - sentinel-net
+    deploy:
+      replicas: 3
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
 
   # ---------------------------------------------------------------------------
   # UI — React frontend served by Nginx

@@ -213,7 +213,8 @@ def main():
 
     # Worker lifecycle events (separate pika connection, own heartbeat thread)
     from worker.worker_events import WorkerEventPublisher
-    events = WorkerEventPublisher(WORKER_ID, "oc", settings)
+    device = "gpu" if settings.oc_use_gpu else "cpu"
+    events = WorkerEventPublisher(WORKER_ID, "oc", device, settings)
     events.online()
 
     _shutdown = False
