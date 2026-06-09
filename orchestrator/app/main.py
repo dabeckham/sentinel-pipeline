@@ -49,10 +49,9 @@ async def lifespan(app: FastAPI):
     # Seed default admin if no users exist
     _seed_admin()
 
-    # Phase 5: recover in-flight jobs and pick up pre-existing files
-    from app.services.startup_recovery import recover_stuck_jobs, scan_ingest_missed
+    # Recover any jobs left in-flight when the process last died.
+    from app.services.startup_recovery import recover_stuck_jobs
     recover_stuck_jobs()
-    scan_ingest_missed()
 
     from app.services.event_loop import set_loop
     from app.services.watcher import start_watcher
@@ -62,8 +61,11 @@ async def lifespan(app: FastAPI):
     import asyncio
     set_loop(asyncio.get_event_loop())
 
-    # Check pipeline health BEFORE starting the watcher so we don't queue
-    # new files into a backed-up pipeline on every orchestrator restart.
+    # Check pipeline health BEFORE starting the watcher.  If the pipeline is
+    # already backed up, the watcher stays paused and scan_ingest_missed() is
+    # skipped — it will run automatically when the health monitor clears the
+    # backlog and calls resume_watcher().  If healthy, start_watcher() calls
+    # resume_watcher() which runs scan_ingest_missed() as part of startup.
     startup_health_check()
     start_watcher()
 
