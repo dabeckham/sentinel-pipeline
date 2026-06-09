@@ -65,10 +65,31 @@ def _get_fps(video_path: str) -> float:
         cap.release()
 
 
+def _job_is_processable(settings, job_id: int) -> bool:
+    """Ask the orchestrator if this job should still be processed.
+    Returns True if processable, False if paused/failed/deleted.
+    Defaults to True on any error (don't block on orchestrator hiccup).
+    """
+    import urllib.request as _req
+    try:
+        url = f"{settings.orchestrator_url}/api/internal/jobs/{job_id}/status"
+        resp = json.loads(_req.urlopen(url, timeout=3).read())
+        return resp.get("processable", True)
+    except Exception:
+        return True  # fail open — better to process than to silently drop
+
+
 def process_job(msg: dict, ch, method):
     settings = get_settings()
     job_id = msg["job_id"]
     video_path = msg["video_path"]
+
+    # Check before spending CPU — skip if job was paused, killed, or deleted
+    if not _job_is_processable(settings, job_id):
+        log.info("md_job_skipped", job_id=job_id)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
+
     log.info("md_job_start", job_id=job_id, video_path=video_path)
 
     try:
@@ -134,6 +155,11 @@ def main():
 
     conn, ch = _connect(settings)
 
+    # Worker lifecycle events (separate pika connection, own heartbeat thread)
+    from worker.worker_events import WorkerEventPublisher
+    events = WorkerEventPublisher(WORKER_ID, "md", "cpu", settings)
+    events.online()
+
     # Graceful SIGTERM — finish current job then exit cleanly
     _shutdown = False
 
@@ -141,6 +167,7 @@ def main():
         nonlocal _shutdown
         log.info("md_worker_sigterm_received")
         _shutdown = True
+        events.offline()
         try:
             ch.stop_consuming()
         except Exception:
@@ -150,6 +177,13 @@ def main():
     signal.signal(signal.SIGINT, _handle_sigterm)
 
     def on_message(ch, method, _props, body):
+        if events.suspended:
+            log.info("md_job_skipped_suspended", worker_id=WORKER_ID)
+            try:
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            except Exception:
+                pass
+            return
         try:
             msg = json.loads(body)
             process_job(msg, ch, method)

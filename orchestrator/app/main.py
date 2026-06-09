@@ -57,6 +57,8 @@ async def lifespan(app: FastAPI):
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
     from app.services.health_monitor import start_health_monitor, startup_health_check
+    from app.services.metrics_broadcaster import start_metrics_broadcaster
+    from app.services.worker_registry import start_liveness_monitor
 
     import asyncio
     set_loop(asyncio.get_event_loop())
@@ -75,6 +77,8 @@ async def lifespan(app: FastAPI):
     consumer_thread.start()
 
     start_health_monitor()
+    start_metrics_broadcaster()
+    start_liveness_monitor()
 
     yield
 
@@ -103,7 +107,7 @@ def create_app() -> FastAPI:
 
     # Routers
     from app.api import health
-    from app.api import auth, jobs, tracks, stats, users, config_api, ws, dlx, snapshots, metrics, pipeline
+    from app.api import auth, jobs, tracks, stats, users, config_api, ws, dlx, snapshots, metrics, pipeline, internal, workers
 
     app.include_router(health.router, prefix="/api", tags=["health"])
     app.include_router(auth.router, prefix="/api")
@@ -115,8 +119,10 @@ def create_app() -> FastAPI:
     app.include_router(config_api.router, prefix="/api")
     app.include_router(dlx.router, prefix="/api")
     app.include_router(metrics.router, prefix="/api")
+    app.include_router(workers.router, prefix="/api")
     app.include_router(pipeline.router)  # prefix already set in pipeline.py
     app.include_router(ws.router)  # /ws/jobs — no /api prefix
+    app.include_router(internal.router, prefix="/api")  # internal worker endpoints, no auth
 
     return app
 
