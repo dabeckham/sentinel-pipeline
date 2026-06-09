@@ -97,7 +97,7 @@ def process_job(msg: dict, ch, method):
         ch.basic_publish(
             exchange="",
             routing_key=settings.queue_oc_results,
-            body=json.dumps({"job_id": job_id, "oc_status": "oc_processing", "worker_id": WORKER_ID}),
+            body=json.dumps({"job_id": job_id, "status": "oc_processing", "worker_id": WORKER_ID}),
             properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
 

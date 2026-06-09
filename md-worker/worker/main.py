@@ -76,7 +76,7 @@ def process_job(msg: dict, ch, method):
         ch.basic_publish(
             exchange="",
             routing_key=settings.queue_oc_results,
-            body=json.dumps({"job_id": job_id, "md_status": "md_processing", "worker_id": WORKER_ID}),
+            body=json.dumps({"job_id": job_id, "status": "md_processing", "worker_id": WORKER_ID}),
             properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
 
@@ -112,7 +112,7 @@ def process_job(msg: dict, ch, method):
         ch.basic_publish(
             exchange="",
             routing_key=settings.queue_oc_results,
-            body=json.dumps({"job_id": job_id, "md_status": "md_complete"}),
+            body=json.dumps({"job_id": job_id, "status": "md_complete", "worker_id": WORKER_ID}),
             properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
 
