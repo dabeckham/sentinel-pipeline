@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
     import asyncio
     set_loop(asyncio.get_event_loop())
 
-    observer = start_watcher()
+    start_watcher()
 
     consumer_thread = threading.Thread(
         target=start_result_consumer, daemon=True, name="oc-result-consumer"
@@ -74,8 +74,8 @@ async def lifespan(app: FastAPI):
     yield
 
     log.info("sentinel_orchestrator_stopping")
-    observer.stop()
-    observer.join(timeout=5)
+    from app.services.watcher import pause_watcher
+    pause_watcher()
 
 
 def create_app() -> FastAPI:

@@ -1,5 +1,6 @@
 import hashlib
 import time
+import threading
 import structlog
 from pathlib import Path
 from watchdog.observers.polling import PollingObserver as Observer
@@ -13,6 +14,10 @@ from app.services import amqp
 log = structlog.get_logger()
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".ts", ".m4v", ".mpg", ".mpeg"}
+
+# Module-level observer handle so health_monitor can pause/resume it.
+_observer: Observer | None = None
+_observer_lock = threading.Lock()
 
 
 def _hash_file(path: str) -> str:
@@ -66,31 +71,24 @@ class IngestHandler(FileSystemEventHandler):
                 log.info("ingest_duplicate_skipped", path=path, existing_job_id=existing.id)
                 return
 
-            from app.services.health_monitor import is_ingest_blocked
-            blocked, reason = is_ingest_blocked()
-
+            settings = get_settings()
             job = Job(
                 file_path=path,
                 file_hash=file_hash,
                 source_path=path,
-                status=JobStatus.pending if blocked else JobStatus.queued,
+                status=JobStatus.queued,
             )
             db.add(job)
             db.commit()
             db.refresh(job)
 
-            if blocked:
-                log.warning("ingest_job_held_circuit_open",
-                            job_id=job.id, path=path, reason=reason)
-            else:
-                settings = get_settings()
-                amqp.publish(settings.queue_ingest, {
-                    "job_id": job.id,
-                    "video_path": path,
-                    "source_type": "ftp",
-                    "options": {},
-                })
-                log.info("ingest_job_queued", job_id=job.id, path=path)
+            amqp.publish(settings.queue_ingest, {
+                "job_id": job.id,
+                "video_path": path,
+                "source_type": "ftp",
+                "options": {},
+            })
+            log.info("ingest_job_queued", job_id=job.id, path=path)
 
             # Broadcast to WebSocket clients
             try:
@@ -117,13 +115,72 @@ class IngestHandler(FileSystemEventHandler):
 
 
 def start_watcher() -> Observer:
+    """Start the file watcher and register the global observer handle."""
+    global _observer
     settings = get_settings()
-    observer = Observer()
-    observer.schedule(
+    obs = Observer()
+    obs.schedule(
         IngestHandler(),
         settings.ingest_watch_path,
         recursive=settings.ingest_recurse,
     )
-    observer.start()
+    obs.start()
+    with _observer_lock:
+        _observer = obs
     log.info("file_watcher_started", path=settings.ingest_watch_path)
-    return observer
+    return obs
+
+
+def pause_watcher():
+    """
+    Stop the file watcher.  Called by the health monitor when the pipeline
+    stalls.  Any files that arrive while paused will be picked up by
+    resume_watcher() → scan_ingest_missed().
+    """
+    global _observer
+    with _observer_lock:
+        obs = _observer
+        _observer = None
+
+    if obs is not None:
+        try:
+            obs.stop()
+            obs.join(timeout=5)
+        except Exception:
+            pass
+        log.warning("file_watcher_paused")
+    else:
+        log.debug("file_watcher_pause_noop")
+
+
+def resume_watcher():
+    """
+    Restart the file watcher and immediately scan for any files that
+    arrived while it was paused.  Called by the health monitor on recovery.
+    """
+    global _observer
+    with _observer_lock:
+        already_running = _observer is not None
+
+    if already_running:
+        log.debug("file_watcher_resume_already_running")
+        return
+
+    settings = get_settings()
+    obs = Observer()
+    obs.schedule(
+        IngestHandler(),
+        settings.ingest_watch_path,
+        recursive=settings.ingest_recurse,
+    )
+    obs.start()
+    with _observer_lock:
+        _observer = obs
+    log.info("file_watcher_resumed", path=settings.ingest_watch_path)
+
+    # Pick up any files that landed while we were paused
+    try:
+        from app.services.startup_recovery import scan_ingest_missed
+        scan_ingest_missed()
+    except Exception:
+        log.exception("file_watcher_resume_scan_error")

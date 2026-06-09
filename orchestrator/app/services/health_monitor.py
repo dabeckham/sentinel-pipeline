@@ -3,23 +3,23 @@ Pipeline health monitor — daemon thread started from lifespan.
 
 Polls every POLL_INTERVAL seconds and checks for stalled OC processing:
 
-  UNHEALTHY conditions (any one triggers the circuit breaker):
+  UNHEALTHY conditions (any one triggers the watcher pause):
     • md_complete jobs older than STUCK_THRESHOLD with 0 OC consumers on
       the motion_results queue
     • dlx.motion_results depth >= DLX_WARN_DEPTH (OC workers are crashing)
 
   On UNHEALTHY:
-    • Open the ingest circuit breaker — watcher saves files to DB as
-      'pending' but does NOT publish to the ingest queue.  MD worker is
-      spared from doing work that will just pile up with no OC to consume.
-    • Run diagnosis (consumer count, DLX depth, stuck job IDs, ingest mount)
+    • Pause the file watcher — no new files enter the pipeline while it is
+      broken.  The orchestrator's job is to keep everyone else coordinated;
+      it won't shove work in when the pipeline can't handle it.
+    • Run diagnosis (consumer count, DLX depth, stuck job IDs)
     • Log structured error + broadcast pipeline_alert via WebSocket
     • Re-alert every ALERT_REPEAT_INTERVAL if still stuck
 
   On RECOVERY (was unhealthy, now healthy):
-    • Close the circuit breaker
+    • Resume the file watcher
+    • scan_ingest_missed() picks up any files that arrived during the pause
     • Log recovery + broadcast pipeline_recovery via WebSocket
-    • Promote all 'pending' jobs → 'queued' and publish to ingest queue
 """
 
 import threading
@@ -37,44 +37,13 @@ STUCK_THRESHOLD       = 180   # seconds before an md_complete job is considered 
 DLX_WARN_DEPTH        = 3     # dead-letter messages before treating as unhealthy
 ALERT_REPEAT_INTERVAL = 300   # seconds before re-broadcasting if still unhealthy
 
-# ── Circuit breaker ───────────────────────────────────────────────────────────
-_ingest_blocked = False
-_block_reason   = ""
-_block_lock     = threading.Lock()
-
-
-def is_ingest_blocked() -> tuple[bool, str]:
-    """Return (blocked, reason).  Called by the watcher before publishing."""
-    with _block_lock:
-        return _ingest_blocked, _block_reason
-
-
-def _set_blocked(reason: str) -> bool:
-    """Set circuit breaker open.  Returns True if this is a new blockage."""
-    global _ingest_blocked, _block_reason
-    with _block_lock:
-        new = not _ingest_blocked
-        _ingest_blocked = True
-        _block_reason   = reason
-        return new
-
-
-def _set_healthy() -> bool:
-    """Clear circuit breaker.  Returns True if this is a new recovery."""
-    global _ingest_blocked, _block_reason
-    with _block_lock:
-        was_blocked     = _ingest_blocked
-        _ingest_blocked = False
-        _block_reason   = ""
-        return was_blocked
-
 
 # ── RabbitMQ probe ────────────────────────────────────────────────────────────
 
 def _probe_rabbitmq(settings) -> dict:
     """
     Return stats about the motion_results queue and its DLX.
-    Keys: consumers (int), depth (int), dlx_depth (int).
+    Keys: consumers (int), depth (int), dlx_depth (int), error (str|None).
     All -1 on connection failure.
     """
     try:
@@ -122,41 +91,6 @@ def _probe_stuck_jobs(db_factory) -> list[dict]:
         db.close()
 
 
-# ── Pending job promotion ─────────────────────────────────────────────────────
-
-def _promote_pending_jobs(db_factory, settings) -> int:
-    """
-    Promote all 'pending' jobs to 'queued' and publish them to the ingest
-    queue.  Called when the circuit breaker is cleared.
-    """
-    from app.models.job import Job, JobStatus
-    from app.services import amqp
-
-    db = db_factory()
-    promoted = 0
-    try:
-        pending = db.query(Job).filter(Job.status == JobStatus.pending).all()
-        for job in pending:
-            job.status = JobStatus.queued
-            amqp.publish(settings.queue_ingest, {
-                "job_id":      job.id,
-                "video_path":  job.file_path,
-                "source_type": "circuit_breaker_release",
-                "options":     {},
-            })
-            promoted += 1
-        db.commit()
-    except Exception:
-        log.exception("health_monitor_promote_pending_error")
-        db.rollback()
-    finally:
-        db.close()
-
-    if promoted:
-        log.info("health_monitor_pending_promoted", count=promoted)
-    return promoted
-
-
 # ── Diagnosis ─────────────────────────────────────────────────────────────────
 
 def _diagnose(mq: dict, stuck: list[dict]) -> str:
@@ -167,7 +101,7 @@ def _diagnose(mq: dict, stuck: list[dict]) -> str:
         parts.append(f"Cannot reach RabbitMQ: {mq['error']}")
     elif mq["consumers"] == 0:
         parts.append(
-            "No OC workers connected to the motion_results queue — "
+            "No OC workers connected to motion_results queue — "
             "check 'docker logs sentinel-oc-worker' and 'docker ps'"
         )
     elif mq["consumers"] > 0 and mq["depth"] > 10:
@@ -213,9 +147,11 @@ def _broadcast(event_type: str, payload: dict):
 def _monitor_loop():
     from app.config import get_settings
     from app.db import SessionLocal
+    from app.services.watcher import pause_watcher, resume_watcher
 
     settings       = get_settings()
     last_alert_at  = 0.0
+    watcher_paused = False
 
     log.info("health_monitor_running",
              poll_interval=POLL_INTERVAL,
@@ -227,17 +163,23 @@ def _monitor_loop():
             mq    = _probe_rabbitmq(settings)
             stuck = _probe_stuck_jobs(SessionLocal)
 
-            # Determine health: unhealthy if OC queue has no consumers AND
-            # jobs are stuck, OR if DLX is filling up with failed jobs.
+            # Unhealthy: OC queue has no consumers AND jobs are stuck,
+            # OR the DLX is filling up with failed jobs.
             oc_absent  = mq["consumers"] == 0 and len(stuck) > 0
             dlx_backed = mq["dlx_depth"] >= DLX_WARN_DEPTH
 
             if oc_absent or dlx_backed:
-                diagnosis   = _diagnose(mq, stuck)
-                is_new_fault = _set_blocked(diagnosis)
+                diagnosis = _diagnose(mq, stuck)
+
+                # Pause the watcher the first time we go unhealthy
+                is_new_fault = not watcher_paused
+                if is_new_fault:
+                    pause_watcher()
+                    watcher_paused = True
 
                 now = time.time()
-                if is_new_fault or (now - last_alert_at) > ALERT_REPEAT_INTERVAL:
+                # Alert on first fault, then repeat every ALERT_REPEAT_INTERVAL
+                if is_new_fault or (now - last_alert_at) >= ALERT_REPEAT_INTERVAL:
                     last_alert_at = now
                     log.error(
                         "pipeline_stalled",
@@ -246,7 +188,7 @@ def _monitor_loop():
                         queue_depth=mq["depth"],
                         dlx_depth=mq["dlx_depth"],
                         stuck_job_ids=[s["id"] for s in stuck],
-                        ingest_blocked=True,
+                        watcher_paused=True,
                     )
                     _broadcast("pipeline_alert", {
                         "diagnosis":    diagnosis,
@@ -257,15 +199,18 @@ def _monitor_loop():
                     })
 
             else:
-                recovered = _set_healthy()
-                if recovered:
+                if watcher_paused:
+                    # Pipeline healthy again — restart the watcher
+                    # resume_watcher() calls scan_ingest_missed() internally
+                    resume_watcher()
+                    watcher_paused = False
+                    last_alert_at  = 0.0
+
                     log.info("pipeline_recovered",
                              oc_consumers=mq["consumers"],
                              queue_depth=mq["depth"])
-                    promoted = _promote_pending_jobs(SessionLocal, settings)
                     _broadcast("pipeline_recovery", {
-                        "oc_consumers":    mq["consumers"],
-                        "pending_released": promoted,
+                        "oc_consumers": mq["consumers"],
                     })
 
         except Exception:
