@@ -38,8 +38,10 @@ export const api = {
   pauseJob:   (id) => req('POST',   `/jobs/${id}/pause`),
   resumeJob:  (id) => req('POST',   `/jobs/${id}/resume`),
   removeJob:  (id) => req('DELETE', `/jobs/${id}`),
-  bulkPause:  ()   => req('POST',   '/jobs/bulk/pause'),
-  bulkKill:   ()   => req('POST',   '/jobs/bulk/kill'),
+  bulkPause:        ()  => req('POST',   '/jobs/bulk/pause'),
+  bulkKill:         ()  => req('POST',   '/jobs/bulk/kill'),
+  bulkResume:       ()  => req('POST',   '/jobs/bulk/resume'),
+  bulkDeleteFailed: ()  => req('DELETE', '/jobs/bulk/delete-failed'),
   jobTracks: (id) => req('GET', `/jobs/${id}/tracks`),
   tracks: (params = {}) => {
     const qs = new URLSearchParams()
