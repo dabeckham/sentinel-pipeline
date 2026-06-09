@@ -137,7 +137,7 @@ def _handle_message(body: bytes):
             worker_registry.on_offline(worker_id)
             log.info("worker_offline", worker_id=worker_id)
         elif event == "heartbeat":
-            worker_registry.on_heartbeat(worker_id)
+            worker_registry.on_heartbeat(worker_id, msg.get("worker_type"), msg.get("device"))
         return
 
     job_id = msg.get("job_id")

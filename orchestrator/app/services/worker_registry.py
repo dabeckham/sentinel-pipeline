@@ -98,15 +98,43 @@ def on_offline(worker_id: str):
             _workers[worker_id]["idle_since"] = None
 
 
-def on_heartbeat(worker_id: str):
-    """Worker sent a keepalive."""
+def on_heartbeat(worker_id: str, worker_type: str | None = None, device: str | None = None):
+    """Worker sent a keepalive.
+    If the worker is unknown (orchestrator restarted), re-register it from
+    the heartbeat payload so the panel recovers without restarting workers.
+    """
     with _lock:
-        if worker_id in _workers:
-            _workers[worker_id]["last_heartbeat"] = _now()
-            # If liveness monitor had marked it offline, restore to idle
-            if _workers[worker_id]["status"] == "offline":
-                _workers[worker_id]["status"]     = "idle"
-                _workers[worker_id]["idle_since"] = _now()
+        if worker_id not in _workers:
+            # Orchestrator lost state — bootstrap from heartbeat data
+            _workers[worker_id] = {
+                "worker_id":       worker_id,
+                "type":            worker_type or _parse_type(worker_id),
+                "device":          (device or "?").lower(),
+                "status":          "idle",
+                "suspended":       False,
+                "job_id":          None,
+                "registered_at":   _now(),
+                "idle_since":      _now(),
+                "last_heartbeat":  _now(),
+                "index":           _next_index(
+                                       worker_type or _parse_type(worker_id),
+                                       (device or "?").lower(),
+                                       worker_id,
+                                   ),
+                "jobs_processed":  0,
+                "total_compute_s": 0.0,
+                "total_frames":    0,
+                "fps_high":        0.0,
+                "fps_low":         0.0,
+                "fps_sum":         0.0,
+                "fps_count":       0,
+            }
+            return
+        _workers[worker_id]["last_heartbeat"] = _now()
+        # If liveness monitor had marked it offline, restore to idle
+        if _workers[worker_id]["status"] == "offline":
+            _workers[worker_id]["status"]     = "idle"
+            _workers[worker_id]["idle_since"] = _now()
 
 
 def update(worker_id: str, status: str, job_id=None):

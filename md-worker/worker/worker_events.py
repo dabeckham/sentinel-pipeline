@@ -101,6 +101,8 @@ class WorkerEventPublisher:
         self._publish({
             "worker_event": "heartbeat",
             "worker_id":    self._worker_id,
+            "worker_type":  self._worker_type,
+            "device":       self._device,
         })
 
     # ── Suspension polling ────────────────────────────────────────────────────
@@ -110,12 +112,25 @@ class WorkerEventPublisher:
         Ask the orchestrator if this worker is suspended.
         Runs on each heartbeat cycle (~15s). Fails open (maintains current state)
         if the orchestrator is unreachable.
+        If orchestrator returns 404, it restarted and lost our registration —
+        re-publish the online event so we show up in the panel again.
         """
         import urllib.request as _req
+        import urllib.error as _err
         try:
             url = f"{self._settings.orchestrator_url}/api/internal/workers/{self._worker_id}/status"
             resp = json.loads(_req.urlopen(url, timeout=3).read())
             self._suspended = resp.get("suspended", False)
+        except _err.HTTPError as e:
+            if e.code == 404:
+                # Orchestrator restarted — re-announce ourselves
+                self._publish({
+                    "worker_event": "online",
+                    "worker_id":    self._worker_id,
+                    "worker_type":  self._worker_type,
+                    "device":       self._device,
+                })
+                log.info("worker_event_reannounce", worker_id=self._worker_id)
         except Exception:
             pass  # orchestrator unreachable — keep current state
 
