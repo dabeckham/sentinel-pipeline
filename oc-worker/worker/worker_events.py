@@ -35,6 +35,12 @@ class WorkerEventPublisher:
         self._shutdown    = threading.Event()
         self._hb_thread   = None
         self._suspended   = False
+        # Connect eagerly so the first publish (online event) doesn't race
+        # against job delivery on the already-connected main channel.
+        try:
+            self._ensure_connected()
+        except Exception:
+            pass  # will retry in _publish
 
     @property
     def suspended(self) -> bool:
