@@ -72,7 +72,7 @@ export default function Layout() {
           } else if (msg.type === 'pipeline_recovery') {
             setPipelineAlert(null)
             setWatcherPaused(false)
-            setToast(`✅ Pipeline recovered — watcher resumed`)
+            setToast(`✅ Pipeline recovered — ingest resumed`)
             setTimeout(() => setToast(null), 6000)
           }
         } catch (_) {}
@@ -155,11 +155,11 @@ export default function Layout() {
                   await api.resumeWatcher()
                   setWatcherPaused(false)
                   setPipelineAlert(null)
-                  setToast('▶ Watcher resumed')
+                  setToast('▶ Ingest resumed')
                 } else {
                   await api.pauseWatcher()
                   setWatcherPaused(true)
-                  setToast('⏸ Watcher paused')
+                  setToast('⏸ Ingest paused')
                 }
                 setTimeout(() => setToast(null), 4000)
               } catch (e) {
@@ -175,7 +175,7 @@ export default function Layout() {
                 : 'text-slate-400 hover:bg-slate-700 hover:text-white'
             } disabled:opacity-50`}
           >
-            {watcherToggling ? '⏳ …' : watcherPaused ? '▶ Resume Watcher' : '⏸ Pause Watcher'}
+            {watcherToggling ? '⏳ …' : watcherPaused ? '▶ Resume Ingest' : '⏸ Pause Ingest'}
           </button>
           <button
             onClick={logout}
