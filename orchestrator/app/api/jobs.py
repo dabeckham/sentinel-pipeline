@@ -85,6 +85,48 @@ def bulk_kill(
     return {"killed": updated}
 
 
+@router.post("/bulk/resume", response_model=dict)
+def bulk_resume(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resume all paused jobs — set to queued and re-publish to ingest queue."""
+    paused_jobs = db.query(Job).filter(Job.status == JobStatus.paused).all()
+    if not paused_jobs:
+        return {"resumed": 0}
+
+    from app.config import get_settings
+    from app.services import amqp
+    settings = get_settings()
+
+    for job in paused_jobs:
+        job.status = JobStatus.queued
+        amqp.publish(settings.queue_ingest, {
+            "job_id": job.id,
+            "video_path": job.file_path,
+            "source_type": "resume",
+            "options": {},
+        })
+
+    db.commit()
+    return {"resumed": len(paused_jobs)}
+
+
+@router.delete("/bulk/delete-failed", response_model=dict)
+def bulk_delete_failed(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete all failed and duplicate jobs (cascade removes tracks/detections)."""
+    deletable = [JobStatus.failed, JobStatus.duplicate, JobStatus.paused]
+    jobs = db.query(Job).filter(Job.status.in_(deletable)).all()
+    count = len(jobs)
+    for job in jobs:
+        db.delete(job)
+    db.commit()
+    return {"deleted": count}
+
+
 # ── List / get ────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=JobListResponse)

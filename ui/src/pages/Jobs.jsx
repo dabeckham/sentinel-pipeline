@@ -186,13 +186,13 @@ function ActionButton({ label, title, colorClass, onClick, confirm: needsConfirm
   if (confirming) {
     return (
       <span className="flex items-center gap-1">
-        <button onClick={fire} disabled={busy}
-          className="text-xs px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50">
-          {busy ? '…' : 'Sure?'}
-        </button>
         <button onClick={e => { e.stopPropagation(); setConfirming(false) }}
           className="text-xs px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors">
           No
+        </button>
+        <button onClick={fire} disabled={busy}
+          className="text-xs px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50">
+          {busy ? '…' : 'Sure?'}
         </button>
       </span>
     )
@@ -208,67 +208,92 @@ function ActionButton({ label, title, colorClass, onClick, confirm: needsConfirm
 
 // ── Bulk action bar ───────────────────────────────────────────────────────────
 function BulkActions({ onRefresh }) {
-  const [confirmKill, setConfirmKill] = useState(false)
-  const [busy, setBusy] = useState(null)  // 'pause' | 'kill' | null
+  const [confirming, setConfirming] = useState(null)  // 'kill' | 'delete' | null
+  const [busy, setBusy]             = useState(null)  // same keys
 
-  const doPause = async () => {
+  const run = (key, apiFn, msgFn) => async () => {
+    if (confirming !== key) { setConfirming(key); return }
+    setBusy(key)
+    setConfirming(null)
+    try {
+      const r = await apiFn()
+      onRefresh()
+      alert(msgFn(r))
+    } catch (err) {
+      alert(`Failed: ${err.message}`)
+    } finally { setBusy(null) }
+  }
+
+  const doPause  = async () => {
     setBusy('pause')
-    try {
-      const r = await api.bulkPause()
-      onRefresh()
-      alert(`Paused ${r.paused} job(s)`)
-    } catch (err) {
-      alert(`Failed: ${err.message}`)
-    } finally { setBusy(null) }
+    try { const r = await api.bulkPause();  onRefresh(); alert(`Paused ${r.paused} job(s)`) }
+    catch (err) { alert(`Failed: ${err.message}`) }
+    finally { setBusy(null) }
   }
 
-  const doKill = async () => {
-    if (!confirmKill) { setConfirmKill(true); return }
-    setBusy('kill')
-    setConfirmKill(false)
-    try {
-      const r = await api.bulkKill()
-      onRefresh()
-      alert(`Killed ${r.killed} job(s)`)
-    } catch (err) {
-      alert(`Failed: ${err.message}`)
-    } finally { setBusy(null) }
+  const doResume = async () => {
+    setBusy('resume')
+    try { const r = await api.bulkResume(); onRefresh(); alert(`Resumed ${r.resumed} job(s)`) }
+    catch (err) { alert(`Failed: ${err.message}`) }
+    finally { setBusy(null) }
   }
+
+  const doKill   = run('kill',   api.bulkKill,         r => `Killed ${r.killed} job(s)`)
+  const doDelete = run('delete', api.bulkDeleteFailed,  r => `Deleted ${r.deleted} job(s)`)
+
+  const disabled = busy !== null
+
+  // Confirm prompt: No first (safe, same position as original button), then Sure?
+  const Confirm = ({ label, onConfirm, onCancel }) => (
+    <span className="flex items-center gap-1">
+      <button onClick={onCancel}
+        className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-md transition-colors">
+        No
+      </button>
+      <button onClick={onConfirm} disabled={disabled}
+        className="text-xs px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-md transition-colors disabled:opacity-50">
+        {label}
+      </button>
+    </span>
+  )
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 flex-wrap">
       <span className="text-slate-500 text-xs">Bulk:</span>
 
-      <button
-        onClick={doPause}
-        disabled={busy !== null}
+      {/* Pause All */}
+      <button onClick={doPause} disabled={disabled}
         className="text-xs px-3 py-1.5 border border-orange-700/50 text-orange-400 hover:bg-orange-900/30 rounded-md transition-colors disabled:opacity-50"
-        title="Pause all queued/pending jobs"
-      >
+        title="Pause all queued/pending jobs">
         {busy === 'pause' ? '…' : '⏸ Pause All'}
       </button>
 
-      {confirmKill ? (
-        <span className="flex items-center gap-1">
-          <button onClick={doKill} disabled={busy !== null}
-            className="text-xs px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded-md transition-colors disabled:opacity-50">
-            {busy === 'kill' ? '…' : 'Kill All — confirm'}
+      {/* Resume All */}
+      <button onClick={doResume} disabled={disabled}
+        className="text-xs px-3 py-1.5 border border-green-700/50 text-green-400 hover:bg-green-900/30 rounded-md transition-colors disabled:opacity-50"
+        title="Resume all paused jobs">
+        {busy === 'resume' ? '…' : '▶ Resume All'}
+      </button>
+
+      {/* Kill All */}
+      {confirming === 'kill'
+        ? <Confirm label={busy === 'kill' ? '…' : 'Kill All — sure?'} onConfirm={doKill} onCancel={() => setConfirming(null)} />
+        : <button onClick={doKill} disabled={disabled}
+            className="text-xs px-3 py-1.5 border border-red-700/50 text-red-400 hover:bg-red-900/30 rounded-md transition-colors disabled:opacity-50"
+            title="Cancel all active jobs (queued, processing, paused)">
+            ✕ Kill All
           </button>
-          <button onClick={() => setConfirmKill(false)}
-            className="text-xs px-2 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-md transition-colors">
-            No
+      }
+
+      {/* Delete Failed */}
+      {confirming === 'delete'
+        ? <Confirm label={busy === 'delete' ? '…' : 'Delete — sure?'} onConfirm={doDelete} onCancel={() => setConfirming(null)} />
+        : <button onClick={doDelete} disabled={disabled}
+            className="text-xs px-3 py-1.5 border border-slate-600 text-slate-400 hover:bg-slate-700/50 hover:text-slate-300 rounded-md transition-colors disabled:opacity-50"
+            title="Permanently delete all failed/duplicate/paused jobs">
+            🗑 Delete Failed
           </button>
-        </span>
-      ) : (
-        <button
-          onClick={doKill}
-          disabled={busy !== null}
-          className="text-xs px-3 py-1.5 border border-red-700/50 text-red-400 hover:bg-red-900/30 rounded-md transition-colors disabled:opacity-50"
-          title="Cancel all active jobs (queued, processing, paused)"
-        >
-          ✕ Kill All
-        </button>
-      )}
+      }
     </div>
   )
 }
