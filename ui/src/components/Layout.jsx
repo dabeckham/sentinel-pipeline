@@ -2,6 +2,8 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 import { wsUrl, api } from '../api.js'
 import MetricsBar from './MetricsBar.jsx'
+import PipelineStatus from './PipelineStatus.jsx'
+import { WsContext } from '../WsContext.jsx'
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: '📊' },
@@ -17,7 +19,19 @@ export default function Layout() {
   const [pipelineAlert, setPipelineAlert] = useState(null)  // {diagnosis, details} | null
   const [watcherPaused, setWatcherPaused] = useState(false)
   const [watcherToggling, setWatcherToggling] = useState(false)
-  const wsRef = useRef(null)
+  const [showScrollTop, setShowScrollTop] = useState(false)
+  const wsRef       = useRef(null)
+  const mainRef     = useRef(null)
+  const wsHandlers  = useRef(new Set())   // shared WS event bus for child pages
+
+  // Scroll-to-top: native listener on the <main> scroll container
+  useEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    const onScroll = () => setShowScrollTop(el.scrollTop > 200)
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
 
   // Restore alert banner + watcher state on page load (survives browser refresh)
   useEffect(() => {
@@ -46,6 +60,8 @@ export default function Layout() {
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
+          // Broadcast to all subscribed pages
+          wsHandlers.current.forEach(h => { try { h(msg) } catch (_) {} })
           if (msg.type === 'job_update' && (msg.status === 'completed' || msg.status === 'failed' || msg.status === 'dead_letter')) {
             const icon = msg.status === 'completed' ? '✅' : '❌'
             setToast(`${icon} Job #${msg.job_id} ${msg.status}`)
@@ -94,6 +110,7 @@ export default function Layout() {
   }[wsStatus]
 
   return (
+    <WsContext.Provider value={wsHandlers}>
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <nav className="w-56 bg-slate-800 flex flex-col border-r border-slate-700 shrink-0">
@@ -123,6 +140,9 @@ export default function Layout() {
             </NavLink>
           ))}
         </div>
+
+        {/* Real-time queue depths + worker states */}
+        <PipelineStatus />
 
         <div className="p-4 border-t border-slate-700 space-y-1">
           {/* Watcher toggle */}
@@ -167,7 +187,10 @@ export default function Layout() {
       </nav>
 
       {/* Main — pb-10 leaves room for the metrics bar */}
-      <main className="flex-1 overflow-y-auto bg-slate-900 pb-10">
+      <main
+        ref={mainRef}
+        className="flex-1 overflow-y-auto bg-slate-900 pb-10"
+      >
         {/* Pipeline alert banner — shown when health monitor opens circuit breaker */}
         {pipelineAlert && (
           <div className="bg-red-950 border-b border-red-700 px-4 py-3 flex items-start gap-3">
@@ -192,15 +215,27 @@ export default function Layout() {
         <Outlet />
       </main>
 
-      {/* Toast — sits above metrics bar */}
-      {toast && (
-        <div className="fixed bottom-12 right-4 bg-slate-700 border border-slate-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50 transition-all">
-          🔔 {toast}
-        </div>
-      )}
-
       {/* Persistent system metrics strip */}
       <MetricsBar />
     </div>
+
+    {/* Scroll-to-top — outside overflow-hidden div so it can never be clipped */}
+    {showScrollTop && (
+      <button
+        onClick={() => mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+        className="fixed right-5 bottom-14 z-[60] w-9 h-9 flex items-center justify-center bg-slate-700 hover:bg-slate-500 border border-slate-500 text-slate-200 hover:text-white rounded-full shadow-xl transition-all"
+        title="Back to top"
+      >
+        ↑
+      </button>
+    )}
+
+    {/* Toast — outside overflow-hidden div */}
+    {toast && (
+      <div className="fixed bottom-14 right-16 bg-slate-700 border border-slate-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-[60] transition-all">
+        🔔 {toast}
+      </div>
+    )}
+    </WsContext.Provider>
   )
 }
