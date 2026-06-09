@@ -114,21 +114,18 @@ class IngestHandler(FileSystemEventHandler):
             db.close()
 
 
-def start_watcher() -> Observer:
-    """Start the file watcher and register the global observer handle."""
-    global _observer
-    settings = get_settings()
-    obs = Observer()
-    obs.schedule(
-        IngestHandler(),
-        settings.ingest_watch_path,
-        recursive=settings.ingest_recurse,
-    )
-    obs.start()
-    with _observer_lock:
-        _observer = obs
-    log.info("file_watcher_started", path=settings.ingest_watch_path)
-    return obs
+def start_watcher() -> None:
+    """
+    Start the file watcher unless the health monitor already determined the
+    pipeline is backed up (startup_health_check sets the paused state before
+    this is called).  If paused, the watcher stays stopped; resume_watcher()
+    will be called by the health monitor when the pipeline clears.
+    """
+    from app.services.health_monitor import _state as _hm_state
+    if _hm_state.watcher_paused:
+        log.warning("file_watcher_start_skipped_pipeline_backed_up")
+        return
+    resume_watcher()   # resume_watcher handles the observer creation + scan
 
 
 def pause_watcher():
