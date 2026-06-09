@@ -104,10 +104,10 @@ def _diagnose(mq: dict, stuck: list[dict]) -> str:
             "No OC workers connected to motion_results queue — "
             "check 'docker logs sentinel-oc-worker' and 'docker ps'"
         )
-    elif mq["consumers"] > 0 and mq["depth"] > 10:
+    else:
         parts.append(
-            f"motion_results queue depth is {mq['depth']} with only "
-            f"{mq['consumers']} OC consumer(s) — workers may be overloaded or stuck"
+            f"OC pipeline backed up — {mq['consumers']} worker(s) connected "
+            f"but not keeping up (queue depth: {mq['depth']})"
         )
 
     if mq["dlx_depth"] > 0:
@@ -163,12 +163,13 @@ def _monitor_loop():
             mq    = _probe_rabbitmq(settings)
             stuck = _probe_stuck_jobs(SessionLocal)
 
-            # Unhealthy: OC queue has no consumers AND jobs are stuck,
-            # OR the DLX is filling up with failed jobs.
-            oc_absent  = mq["consumers"] == 0 and len(stuck) > 0
-            dlx_backed = mq["dlx_depth"] >= DLX_WARN_DEPTH
+            # Unhealthy: any md_complete jobs older than STUCK_THRESHOLD
+            # (pipeline is backed up regardless of whether workers are connected),
+            # OR the DLX is filling up with worker crashes.
+            oc_backed_up = len(stuck) > 0
+            dlx_backed   = mq["dlx_depth"] >= DLX_WARN_DEPTH
 
-            if oc_absent or dlx_backed:
+            if oc_backed_up or dlx_backed:
                 diagnosis = _diagnose(mq, stuck)
 
                 # Pause the watcher the first time we go unhealthy
