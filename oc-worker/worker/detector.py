@@ -96,10 +96,31 @@ def get_model() -> YOLO:
         log.info("yolo_model_ready", device=device)
 
     # Build allowed-class filter
+    # TRT engines may not expose .names via the YOLO wrapper until after a
+    # forward pass; also try the predictor's underlying model as a fallback.
+    def _get_names() -> dict:
+        try:
+            return _model.names          # works for PT models + after TRT warmup
+        except AttributeError:
+            pass
+        try:
+            return _model.predictor.model.names   # TRT fallback path
+        except AttributeError:
+            pass
+        try:
+            return _model.model.model.names       # nested module fallback
+        except AttributeError:
+            pass
+        # Last resort: load a throw-away PT model just to get class names
+        log.warning("yolo_names_fallback_pt_load", pt=str(pt_path))
+        _tmp = YOLO(str(pt_path) if pt_path.exists() else s.oc_model_name)
+        return _tmp.names
+
     allowed_names = {c.strip().lower() for c in s.oc_allowed_classes.split(",") if c.strip()}
     if allowed_names:
+        class_names = _get_names()
         _allowed_class_ids = [
-            cid for cid, name in _model.names.items()
+            cid for cid, name in class_names.items()
             if name.lower() in allowed_names
         ]
         log.info("yolo_class_filter",
@@ -196,6 +217,15 @@ def process_job_video(
 
     fps, orig_w, orig_h = _video_meta(video_path)
 
+    # Cache class-name lookup (same fallback path as get_model)
+    try:
+        _names = model.names
+    except AttributeError:
+        try:
+            _names = model.predictor.model.names
+        except AttributeError:
+            _names = model.model.model.names
+
     # Scale factor: detections come back in the decoded (resized) frame space;
     # we need to map them back to original pixel coordinates.
     decode_width = 1280
@@ -242,7 +272,7 @@ def process_job_video(
 
             all_detections.append({
                 "track_id":    int(boxes.id[i]),
-                "class_label": model.names[int(boxes.cls[i])],
+                "class_label": _names[int(boxes.cls[i])],
                 "confidence":  round(float(boxes.conf[i]), 4),
                 "bbox":        {"x": x1, "y": y1, "w": w, "h": h},
                 "frame_index": frame_index,
