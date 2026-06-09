@@ -117,11 +117,13 @@ def update(worker_id: str, status: str, job_id=None):
     with _lock:
         w = _workers.get(worker_id)
         if w is None:
-            # Worker came online before the registry was listening — register it now
+            # Worker came online before the registry was listening — register it now.
+            # Device is unknown until the online event arrives; use "?" so the UI
+            # shows a placeholder label rather than incorrectly labelling it "cpu".
             _workers[worker_id] = {
                 "worker_id":       worker_id,
                 "type":            _parse_type(worker_id),
-                "device":          "cpu",
+                "device":          "?",
                 "suspended":       False,
                 "registered_at":   _now(),
                 "index":           0,
