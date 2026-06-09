@@ -165,16 +165,13 @@ function WorkerRow({ w, tick, onSuspend, onResume }) {
   const label = `${(w.type || '?').toUpperCase()}-${(w.device || 'cpu').toUpperCase()}-${(w.index ?? 0) + 1}`
 
   // Dot + timer color
-  let dotClass, tooltipText
+  let dotClass
   if (isSuspended) {
-    dotClass    = 'bg-red-500'
-    tooltipText = 'SUSPENDED'
+    dotClass = 'bg-red-500'
   } else if (isProcessing) {
-    dotClass    = 'bg-yellow-400 animate-pulse shadow-[0_0_5px_#facc15]'
-    tooltipText = 'BUSY'
+    dotClass = 'bg-yellow-400 animate-pulse shadow-[0_0_5px_#facc15]'
   } else {
-    dotClass    = 'bg-green-500'
-    tooltipText = 'IDLE'
+    dotClass = 'bg-green-500'
   }
 
   const timerColor = isSuspended ? 'text-red-400' : isProcessing ? 'text-yellow-400' : 'text-green-400'
@@ -213,13 +210,6 @@ function WorkerRow({ w, tick, onSuspend, onResume }) {
         <span className="ml-auto text-[9px] font-semibold text-red-400 bg-red-900/30 px-1 rounded">
           SUSP
         </span>
-      )}
-
-      {/* Hover tooltip (status text) */}
-      {hovering && (
-        <div className="absolute bottom-full left-4 mb-1 px-2 py-0.5 bg-slate-700 text-slate-200 text-[10px] font-semibold rounded shadow-lg whitespace-nowrap z-[150] pointer-events-none">
-          {tooltipText}
-        </div>
       )}
 
       {/* Stats callout (hover) */}
