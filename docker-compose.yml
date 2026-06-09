@@ -137,7 +137,6 @@ services:
     build:
       context: ./md-worker
       dockerfile: Dockerfile
-    container_name: sentinel-md-worker
     restart: unless-stopped
     depends_on:
       rabbitmq:
@@ -154,6 +153,8 @@ services:
       - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:rw
     networks:
       - sentinel-net
+    deploy:
+      replicas: 4
 
   # ---------------------------------------------------------------------------
   # OC Worker — Object Classification (CPU mode)
