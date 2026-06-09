@@ -71,3 +71,4 @@ rabbitmq-data/
 tmp/
 temp/
 scratch/
+.env.backup.with.keys
