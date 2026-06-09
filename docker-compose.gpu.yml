@@ -17,6 +17,7 @@ services:
       OC_MODEL_NAME: yolo11s
     volumes:
       - yolo-models:/app/models
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     deploy:
       resources:
         reservations:
@@ -46,6 +47,7 @@ services:
       OC_MODEL_NAME: yolo11s
     volumes:
       - yolo-models:/app/models
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     deploy:
       resources:
         reservations:
@@ -77,6 +79,7 @@ services:
       OC_MODEL_NAME: yolo11s
     volumes:
       - yolo-models:/app/models
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     deploy:
       resources:
         reservations:
@@ -106,6 +109,7 @@ services:
       OC_MODEL_NAME: yolo11s
     volumes:
       - yolo-models:/app/models
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     deploy:
       resources:
         reservations:
