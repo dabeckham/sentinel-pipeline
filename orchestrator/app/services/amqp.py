@@ -51,3 +51,19 @@ _publisher = Publisher()
 
 def publish(queue: str, message: dict):
     _publisher.publish(queue, message)
+
+
+def purge_queue(queue: str) -> int:
+    """Purge all messages from a queue. Returns message count purged."""
+    settings = get_settings()
+    try:
+        conn = pika.BlockingConnection(settings.rabbitmq_params())
+        ch = conn.channel()
+        result = ch.queue_purge(queue)
+        conn.close()
+        purged = result.method.message_count
+        log.info("amqp_queue_purged", queue=queue, messages=purged)
+        return purged
+    except Exception as exc:
+        log.error("amqp_purge_failed", queue=queue, error=str(exc))
+        return 0

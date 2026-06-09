@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     queue_ingest: str = "ingest"
     queue_motion_results: str = "motion_results"
     queue_oc_results: str = "oc_results"
+    orchestrator_url: str = "http://orchestrator:8000"
 
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "sentinel"
@@ -39,7 +40,7 @@ class Settings(BaseSettings):
             port=self.rabbitmq_port,
             virtual_host=self.rabbitmq_vhost,
             credentials=pika.PlainCredentials(self.rabbitmq_user, self.rabbitmq_password),
-            heartbeat=60,
+            heartbeat=600,
         )
 
     class Config:

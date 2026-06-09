@@ -5,6 +5,10 @@ POST /api/dlx/requeue?queue=<dlx_queue_name>&limit=<n>
   Moves up to `limit` messages from a DLX queue back to its source queue.
   Admin only.
 
+DELETE /api/dlx/purge?queue=<dlx_queue_name>
+  Permanently discards all messages in a DLX queue.
+  Admin only.  Safe to call at any time — the live pipeline is unaffected.
+
 GET /api/dlx/counts
   Returns message counts for all known DLX queues.
 """
@@ -55,6 +59,23 @@ def dlx_counts(_: User = Depends(require_admin)):
             conn.close()
         except Exception:
             pass
+
+
+@router.delete("/purge")
+def dlx_purge(
+    queue: str = Query(..., description="DLX queue name, e.g. dlx.ingest"),
+    _: User = Depends(require_admin),
+):
+    """Permanently discard all messages in a DLX queue. Live pipeline unaffected."""
+    if queue not in _DLX_SOURCE_MAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown DLX queue '{queue}'. Valid: {list(_DLX_SOURCE_MAP.keys())}",
+        )
+    from app.services.amqp import purge_queue
+    purged = purge_queue(queue)
+    log.info("dlx_purged", queue=queue, messages=purged)
+    return {"queue": queue, "purged": purged}
 
 
 @router.post("/requeue")

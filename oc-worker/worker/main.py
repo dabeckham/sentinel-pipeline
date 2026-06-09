@@ -173,8 +173,23 @@ def process_job(msg: dict, ch, method):
                  job_id=job_id, detections=len(detections), worker=WORKER_ID)
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
-    except Exception:
+    except Exception as exc:
         log.exception("oc_job_error", job_id=job_id)
+        # Notify orchestrator so the job is marked failed in the DB
+        try:
+            ch.basic_publish(
+                exchange="",
+                routing_key=settings.queue_oc_results,
+                body=json.dumps({
+                    "job_id":    job_id,
+                    "status":    "failed",
+                    "worker_id": WORKER_ID,
+                    "error":     str(exc),
+                }),
+                properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+            )
+        except Exception:
+            pass
         try:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         except Exception:
@@ -196,12 +211,18 @@ def main():
 
     conn, ch = _connect(settings)
 
+    # Worker lifecycle events (separate pika connection, own heartbeat thread)
+    from worker.worker_events import WorkerEventPublisher
+    events = WorkerEventPublisher(WORKER_ID, "oc", settings)
+    events.online()
+
     _shutdown = False
 
     def _handle_sigterm(signum, frame):
         nonlocal _shutdown
         log.info("oc_worker_sigterm_received", worker_id=WORKER_ID)
         _shutdown = True
+        events.offline()
         try:
             ch.stop_consuming()
         except Exception:

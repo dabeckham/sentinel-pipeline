@@ -68,11 +68,7 @@ def bulk_kill(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Cancel all non-terminal jobs (queued, pending, paused, in-flight).
-
-    Also purges the ingest and motion_results queues so workers stop
-    burning CPU on jobs that are now dead.
-    """
+    """Cancel all non-terminal jobs (queued, pending, paused, in-flight)."""
     killable = list(_ACTIVE) + [JobStatus.paused]
     now = datetime.now(timezone.utc)
     updated = (
@@ -86,15 +82,6 @@ def bulk_kill(
         )
     )
     db.commit()
-
-    # Purge queues so workers don't waste time on the now-dead jobs
-    if updated > 0:
-        from app.config import get_settings
-        from app.services import amqp
-        settings = get_settings()
-        amqp.purge_queue(settings.queue_ingest)
-        amqp.purge_queue(settings.queue_motion_results)
-
     return {"killed": updated}
 
 

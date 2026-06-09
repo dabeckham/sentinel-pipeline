@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../api.js'
+import { useWsEvent } from '../WsContext.jsx'
 
 // ── Class colour map ──────────────────────────────────────────────────────────
 const CLASS_COLORS = {
@@ -872,6 +873,21 @@ export default function Tracks() {
   // Load camera list once
   useEffect(() => { api.cameras().then(setCameraList).catch(() => {}) }, [])
 
+  // Auto-refresh when jobs complete — off by default, user can enable
+  const [autoRefresh, setAutoRefresh] = useState(false)
+  const wsDebounce = useRef(null)
+  useWsEvent(useCallback(msg => {
+    if (!autoRefresh) return
+    if (msg.type === 'job_update' && msg.status === 'completed') {
+      clearTimeout(wsDebounce.current)
+      wsDebounce.current = setTimeout(() => {
+        setItems([])
+        setTotal(null)
+        setPage(1)
+      }, 1500)
+    }
+  }, [autoRefresh]))
+
   // A key that uniquely represents the current filter state (excluding page).
   // When this changes, reset the item list and go back to page 1.
   const filterKey = useMemo(() =>
@@ -988,10 +1004,24 @@ export default function Tracks() {
 
         {/* Result count */}
         {total != null && (
-          <span className="text-slate-500 text-sm ml-auto">
+          <span className="text-slate-500 text-sm">
             {total.toLocaleString()} track{total !== 1 ? 's' : ''}
           </span>
         )}
+
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh(v => !v)}
+            title={autoRefresh ? 'Auto-refresh on — click to pause' : 'Auto-refresh paused — click to enable'}
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+              autoRefresh
+                ? 'border-green-700/50 text-green-400 bg-green-900/20 hover:bg-green-900/40'
+                : 'border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-400'
+            }`}
+          >
+            {autoRefresh ? '⏸ Pause refresh' : '▶ Live refresh'}
+          </button>
+        </div>
 
         {/* Clear filters */}
         {hasActiveFilters && (

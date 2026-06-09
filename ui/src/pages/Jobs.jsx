@@ -308,7 +308,7 @@ export default function Jobs() {
   const [total, setTotal]               = useState(null)
   const [hasMore, setHasMore]           = useState(true)
   const [nextPage, setNextPage]         = useState(1)
-  const [statusFilter, setStatusFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState([])   // [] = all statuses
   const [initialLoading, setInitialLoading] = useState(true)
   const [loadingMore, setLoadingMore]   = useState(false)
   const [colWidths, setColWidths]       = useState(DEFAULT_WIDTHS)
@@ -437,43 +437,85 @@ export default function Jobs() {
   return (
     <div className="p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold text-white">Jobs</h2>
-          {total !== null && (
-            <p className="text-slate-400 text-sm mt-1">
-              {items.length < total
-                ? <span>{items.length} of {total} loaded</span>
-                : <span>{total} total</span>
-              }
-              {hasActive && <span className="ml-2 text-yellow-400 animate-pulse">● processing</span>}
-            </p>
-          )}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-2xl font-bold text-white">Jobs</h2>
+            {total !== null && (
+              <p className="text-slate-400 text-sm mt-1">
+                {items.length < total
+                  ? <span>{items.length} of {total} loaded</span>
+                  : <span>{total} total</span>
+                }
+                {hasActive && <span className="ml-2 text-yellow-400 animate-pulse">● processing</span>}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => loadFirst(statusFilter)}
+              className="bg-slate-700 hover:bg-slate-600 text-white text-sm px-3 py-1.5 rounded-md transition-colors">
+              Refresh
+            </button>
+            <button onClick={() => setColWidths(DEFAULT_WIDTHS)}
+              className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 text-xs px-2.5 py-1.5 rounded-md transition-colors"
+              title="Reset column widths">
+              Reset cols
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="bg-slate-800 border border-slate-600 text-slate-300 text-sm rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand"
+
+        {/* Status filter toggle pills */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-slate-500 text-xs mr-1">Filter:</span>
+          {/* "All" pill */}
+          <button
+            onClick={() => setStatusFilter([])}
+            className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+              statusFilter.length === 0
+                ? 'bg-brand/20 border-brand text-brand'
+                : 'border-slate-600 text-slate-400 hover:border-slate-500 hover:text-slate-300'
+            }`}
           >
-            <option value="">All statuses</option>
-            <option value="queued">Queued</option>
-            <option value="paused">Paused</option>
-            <option value="md_processing">MD Processing</option>
-            <option value="md_complete">MD Complete</option>
-            <option value="oc_processing">OC Processing</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-          </select>
-          <button onClick={() => loadFirst(statusFilter)}
-            className="bg-slate-700 hover:bg-slate-600 text-white text-sm px-3 py-1.5 rounded-md transition-colors">
-            Refresh
+            All
           </button>
-          <button onClick={() => setColWidths(DEFAULT_WIDTHS)}
-            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 text-xs px-2.5 py-1.5 rounded-md transition-colors"
-            title="Reset column widths">
-            Reset cols
-          </button>
+          {[
+            ['queued',        'Queued'],
+            ['paused',        'Paused'],
+            ['md_processing', 'MD Proc'],
+            ['md_complete',   'MD Done'],
+            ['oc_processing', 'OC Proc'],
+            ['completed',     'Completed'],
+            ['failed',        'Failed'],
+          ].map(([val, label]) => {
+            const active = statusFilter.includes(val)
+            const colCls = STATUS_COLORS[val] ?? 'bg-slate-700/50 text-slate-300 border-slate-600'
+            return (
+              <button
+                key={val}
+                onClick={() => {
+                  setStatusFilter(prev =>
+                    prev.includes(val) ? prev.filter(s => s !== val) : [...prev, val]
+                  )
+                }}
+                className={`text-xs px-3 py-1 rounded-full border transition-all ${
+                  active
+                    ? colCls + ' opacity-100 shadow-sm'
+                    : 'border-slate-700 text-slate-500 hover:border-slate-600 hover:text-slate-400'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          })}
+          {statusFilter.length > 0 && (
+            <button
+              onClick={() => setStatusFilter([])}
+              className="text-xs text-slate-500 hover:text-slate-300 ml-1 transition-colors"
+              title="Clear filter"
+            >
+              ✕ clear
+            </button>
+          )}
         </div>
       </div>
 
