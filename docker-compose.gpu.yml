@@ -9,6 +9,7 @@ services:
     build:
       context: ./oc-worker
       dockerfile: Dockerfile.gpu
+    image: sentinel-oc-worker-gpu:latest
     networks:
       - sentinel-net
     environment:
@@ -27,9 +28,7 @@ services:
               capabilities: [gpu]
 
   oc-worker-2:
-    build:
-      context: ./oc-worker
-      dockerfile: Dockerfile.gpu
+    image: sentinel-oc-worker-gpu:latest
     container_name: sentinel-oc-worker-2
     restart: unless-stopped
     depends_on:
@@ -59,9 +58,7 @@ services:
   # oc-worker-3 and oc-worker-4 — additional workers on GPU 1 (same as primary oc-worker)
   # GPU 1 runs at ~2% util with one worker — safely fits 4+ workers
   oc-worker-3:
-    build:
-      context: ./oc-worker
-      dockerfile: Dockerfile.gpu
+    image: sentinel-oc-worker-gpu:latest
     container_name: sentinel-oc-worker-3
     restart: unless-stopped
     depends_on:
@@ -89,9 +86,7 @@ services:
               capabilities: [gpu]
 
   oc-worker-4:
-    build:
-      context: ./oc-worker
-      dockerfile: Dockerfile.gpu
+    image: sentinel-oc-worker-gpu:latest
     container_name: sentinel-oc-worker-4
     restart: unless-stopped
     depends_on:
