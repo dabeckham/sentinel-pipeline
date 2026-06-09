@@ -140,32 +140,42 @@ def _pipeline_source(video_path: str, frame_indices: list[int],
                      decode_width: int = 1280, buffer_size: int = 8):
     """
     Yield decoded BGR frames for each index in frame_indices, in order.
-    A background thread seeks to each frame and decodes it; the main thread
-    consumes from the queue while running TRT inference — they overlap.
 
-    Yields (frame_index, bgr_frame) tuples.
+    Reads the video SEQUENTIALLY (one forward pass, zero seeks) and
+    discards non-motion frames.  For H.265 video, random seeking via
+    cap.set(CAP_PROP_POS_FRAMES) requires decoding from the nearest
+    I-frame, which takes ~1-2s per seek and starves the GPU.  A single
+    forward pass is ~10-40× faster for typical surveillance clips.
+
+    A background thread does the sequential read; the main thread runs
+    TRT inference — they run in parallel via a bounded queue.
+
+    Yields (frame_index, bgr_frame) tuples in ascending frame order.
     """
     fps, width, height = _video_meta(video_path)
     scale = decode_width / width
     out_w = decode_width
     out_h = int(height * scale)
 
+    wanted = set(frame_indices)          # O(1) membership test
+    max_idx = max(frame_indices)         # stop reading past the last motion frame
+
     frame_q: queue.Queue = queue.Queue(maxsize=buffer_size)
     _DONE = object()
 
     def _decode_worker():
         cap = cv2.VideoCapture(video_path)
+        current = 0
         try:
-            for idx in frame_indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            while current <= max_idx:
                 ok, frame = cap.read()
                 if not ok:
-                    log.warning("pipeline_frame_read_failed",
-                                video=video_path, frame_index=idx)
-                    continue
-                resized = cv2.resize(frame, (out_w, out_h),
-                                     interpolation=cv2.INTER_LINEAR)
-                frame_q.put((idx, resized))
+                    break
+                if current in wanted:
+                    resized = cv2.resize(frame, (out_w, out_h),
+                                         interpolation=cv2.INTER_LINEAR)
+                    frame_q.put((current, resized))
+                current += 1
         finally:
             cap.release()
             frame_q.put(_DONE)
@@ -188,6 +198,8 @@ def _video_meta(video_path: str) -> tuple[float, int, int]:
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
+    if width == 0 or height == 0:
+        raise RuntimeError(f"Cannot open video (width=0 or height=0): {video_path}")
     return fps, width, height
 
 
