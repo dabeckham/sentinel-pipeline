@@ -127,75 +127,55 @@ def _handle_message(body: bytes):
 
     job_id = msg.get("job_id")
 
-    # OC worker pickup ack — update status immediately when worker takes the job
-    if msg.get("oc_status") == "oc_processing":
+    # Generic worker status update — any worker (current or future) sends:
+    #   {"job_id": X, "status": "<valid JobStatus value>", "worker_id": "..."}
+    # This fires immediately when a worker picks up or transitions a job,
+    # before the final result arrives.  No worker-type-specific code needed.
+    if msg.get("status") and not msg.get("is_final"):
+        new_status_str = msg["status"]
+        try:
+            new_status = JobStatus(new_status_str)
+        except ValueError:
+            log.warning("worker_status_unknown", job_id=job_id, status=new_status_str)
+            return
+
         db = SessionLocal()
         try:
             job = db.query(Job).filter_by(id=job_id).first()
             if not job or job.status in (JobStatus.failed, JobStatus.paused):
                 return
-            if job.status == JobStatus.md_complete:
-                job.status = JobStatus.oc_processing
-                job.oc_started_at = datetime.now(timezone.utc)
-                if msg.get("worker_id"):
-                    job.oc_worker_id = msg["worker_id"]
-                db.commit()
-                try:
-                    from app.api.ws import broadcast
-                    from app.services.event_loop import get_loop
-                    loop = get_loop()
-                    if loop is not None:
-                        import asyncio
-                        asyncio.run_coroutine_threadsafe(
-                            broadcast({"type": "job_update", "job_id": job_id, "status": "oc_processing"}),
-                            loop,
-                        )
-                except Exception:
-                    pass
-        except Exception:
-            log.exception("oc_status_update_error", job_id=job_id)
-            db.rollback()
-        finally:
-            db.close()
-        return
 
-    # MD worker status ping — update job status and stamp timestamps
-    if msg.get("md_status"):
-        db = SessionLocal()
-        try:
-            job = db.query(Job).filter_by(id=job_id).first()
-            if not job:
-                return
-            # Drop updates for killed/paused jobs
-            if job.status in (JobStatus.failed, JobStatus.paused):
-                return
-            new_status = None
-            if msg["md_status"] == "md_processing" and job.status == JobStatus.queued:
-                job.status = JobStatus.md_processing
-                job.md_started_at = datetime.now(timezone.utc)
-                if msg.get("worker_id"):
-                    job.md_worker_id = msg["worker_id"]
-                new_status = "md_processing"
-            elif msg["md_status"] == "md_complete" and job.status == JobStatus.md_processing:
-                job.status = JobStatus.md_complete
-                job.md_completed_at = datetime.now(timezone.utc)
-                new_status = "md_complete"
-            if new_status:
-                db.commit()
-                try:
-                    from app.api.ws import broadcast
-                    from app.services.event_loop import get_loop
-                    loop = get_loop()
-                    if loop is not None:
-                        import asyncio
-                        asyncio.run_coroutine_threadsafe(
-                            broadcast({"type": "job_update", "job_id": job_id, "status": new_status}),
-                            loop,
-                        )
-                except Exception:
-                    pass
+            job.status = new_status
+            worker_id = msg.get("worker_id")
+
+            # Stamp timing fields by status
+            now = datetime.now(timezone.utc)
+            if new_status == JobStatus.md_processing:
+                job.md_started_at = now
+                if worker_id: job.md_worker_id = worker_id
+            elif new_status == JobStatus.md_complete:
+                job.md_completed_at = now
+            elif new_status == JobStatus.oc_processing:
+                job.oc_started_at = now
+                if worker_id: job.oc_worker_id = worker_id
+
+            db.commit()
+            log.debug("worker_status_update", job_id=job_id, status=new_status_str)
+
+            try:
+                from app.api.ws import broadcast
+                from app.services.event_loop import get_loop
+                loop = get_loop()
+                if loop is not None:
+                    import asyncio
+                    asyncio.run_coroutine_threadsafe(
+                        broadcast({"type": "job_update", "job_id": job_id, "status": new_status_str}),
+                        loop,
+                    )
+            except Exception:
+                pass
         except Exception:
-            log.exception("md_status_update_error", job_id=job_id)
+            log.exception("worker_status_update_error", job_id=job_id)
             db.rollback()
         finally:
             db.close()
