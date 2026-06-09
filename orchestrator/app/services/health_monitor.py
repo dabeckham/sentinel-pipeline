@@ -146,8 +146,10 @@ def _broadcast(event_type: str, payload: dict):
 
 class _MonitorState:
     """Mutable state shared between startup_health_check and _monitor_loop."""
-    watcher_paused = False
-    last_alert_at  = 0.0
+    watcher_paused   = False
+    manually_paused  = False   # set by UI — health monitor won't auto-resume
+    last_alert_at    = 0.0
+    diagnosis        = ""      # last known diagnosis, persists for API
 
 
 _state = _MonitorState()
@@ -168,7 +170,8 @@ def _run_check(settings, db_factory):
 
     if oc_backed_up or dlx_backed:
         diagnosis    = _diagnose(mq, stuck)
-        is_new_fault = not _state.watcher_paused
+        _state.diagnosis  = diagnosis
+        is_new_fault      = not _state.watcher_paused
 
         if is_new_fault:
             pause_watcher()
@@ -194,10 +197,11 @@ def _run_check(settings, db_factory):
                 "stuck_jobs":   [s["id"] for s in stuck],
             })
     else:
-        if _state.watcher_paused:
+        if _state.watcher_paused and not _state.manually_paused:
             resume_watcher()
             _state.watcher_paused = False
             _state.last_alert_at  = 0.0
+            _state.diagnosis      = ""
 
             log.info("pipeline_recovered",
                      oc_consumers=mq["consumers"],
@@ -205,6 +209,38 @@ def _run_check(settings, db_factory):
             _broadcast("pipeline_recovery", {
                 "oc_consumers": mq["consumers"],
             })
+
+
+def get_pipeline_status() -> dict:
+    """
+    Return current pipeline health state for the REST API and UI.
+    Persists across WebSocket reconnects — UI fetches this on page load.
+    """
+    return {
+        "watcher_paused":   _state.watcher_paused,
+        "watcher_manually_paused": _state.manually_paused,
+        "diagnosis":        _state.diagnosis if _state.watcher_paused else None,
+    }
+
+
+def manual_pause_watcher():
+    """UI-triggered watcher pause. Sets manually_paused so health monitor won't auto-resume."""
+    from app.services.watcher import pause_watcher
+    _state.manually_paused = True
+    if not _state.watcher_paused:
+        pause_watcher()
+        _state.watcher_paused = True
+    log.info("file_watcher_manually_paused")
+
+
+def manual_resume_watcher():
+    """UI-triggered watcher resume. Clears manually_paused and restarts watcher."""
+    from app.services.watcher import resume_watcher
+    _state.manually_paused = False
+    if _state.watcher_paused:
+        resume_watcher()
+        _state.watcher_paused = False
+    log.info("file_watcher_manually_resumed")
 
 
 def startup_health_check():

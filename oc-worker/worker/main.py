@@ -93,6 +93,14 @@ def process_job(msg: dict, ch, method):
              motion_frames=len(motion_frames), worker=WORKER_ID)
 
     try:
+        # Immediately notify orchestrator that this worker has taken the job
+        ch.basic_publish(
+            exchange="",
+            routing_key=settings.queue_oc_results,
+            body=json.dumps({"job_id": job_id, "oc_status": "oc_processing", "worker_id": WORKER_ID}),
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+        )
+
         # ── Run TRT + ByteTrack ───────────────────────────────────────────────
         detections = process_job_video(video_path, motion_frames)
 

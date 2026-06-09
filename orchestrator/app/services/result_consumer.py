@@ -127,6 +127,38 @@ def _handle_message(body: bytes):
 
     job_id = msg.get("job_id")
 
+    # OC worker pickup ack — update status immediately when worker takes the job
+    if msg.get("oc_status") == "oc_processing":
+        db = SessionLocal()
+        try:
+            job = db.query(Job).filter_by(id=job_id).first()
+            if not job or job.status in (JobStatus.failed, JobStatus.paused):
+                return
+            if job.status == JobStatus.md_complete:
+                job.status = JobStatus.oc_processing
+                job.oc_started_at = datetime.now(timezone.utc)
+                if msg.get("worker_id"):
+                    job.oc_worker_id = msg["worker_id"]
+                db.commit()
+                try:
+                    from app.api.ws import broadcast
+                    from app.services.event_loop import get_loop
+                    loop = get_loop()
+                    if loop is not None:
+                        import asyncio
+                        asyncio.run_coroutine_threadsafe(
+                            broadcast({"type": "job_update", "job_id": job_id, "status": "oc_processing"}),
+                            loop,
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("oc_status_update_error", job_id=job_id)
+            db.rollback()
+        finally:
+            db.close()
+        return
+
     # MD worker status ping — update job status and stamp timestamps
     if msg.get("md_status"):
         db = SessionLocal()
