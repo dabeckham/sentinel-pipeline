@@ -103,7 +103,7 @@ def create_app() -> FastAPI:
 
     # Routers
     from app.api import health
-    from app.api import auth, jobs, tracks, stats, users, config_api, ws, dlx, snapshots, metrics
+    from app.api import auth, jobs, tracks, stats, users, config_api, ws, dlx, snapshots, metrics, pipeline
 
     app.include_router(health.router, prefix="/api", tags=["health"])
     app.include_router(auth.router, prefix="/api")
@@ -115,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(config_api.router, prefix="/api")
     app.include_router(dlx.router, prefix="/api")
     app.include_router(metrics.router, prefix="/api")
+    app.include_router(pipeline.router)  # prefix already set in pipeline.py
     app.include_router(ws.router)  # /ws/jobs — no /api prefix
 
     return app

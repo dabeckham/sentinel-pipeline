@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
-import { wsUrl } from '../api.js'
+import { wsUrl, api } from '../api.js'
 import MetricsBar from './MetricsBar.jsx'
 
 const NAV = [
@@ -12,10 +12,22 @@ const NAV = [
 
 export default function Layout() {
   const navigate = useNavigate()
-  const [wsStatus, setWsStatus]       = useState('connecting')
-  const [toast, setToast]             = useState(null)
+  const [wsStatus, setWsStatus]           = useState('connecting')
+  const [toast, setToast]                 = useState(null)
   const [pipelineAlert, setPipelineAlert] = useState(null)  // {diagnosis, details} | null
+  const [watcherPaused, setWatcherPaused] = useState(false)
+  const [watcherToggling, setWatcherToggling] = useState(false)
   const wsRef = useRef(null)
+
+  // Restore alert banner + watcher state on page load (survives browser refresh)
+  useEffect(() => {
+    api.pipelineStatus().then(s => {
+      setWatcherPaused(s.watcher_paused)
+      if (s.watcher_paused && s.diagnosis) {
+        setPipelineAlert({ diagnosis: s.diagnosis, details: {} })
+      }
+    }).catch(() => {})
+  }, [])
 
   useEffect(() => {
     let timer
@@ -40,9 +52,11 @@ export default function Layout() {
             setTimeout(() => setToast(null), 4000)
           } else if (msg.type === 'pipeline_alert') {
             setPipelineAlert({ diagnosis: msg.diagnosis, details: msg })
+            setWatcherPaused(true)
           } else if (msg.type === 'pipeline_recovery') {
             setPipelineAlert(null)
-            setToast(`✅ Pipeline recovered — ${msg.pending_released ?? 0} held job(s) released`)
+            setWatcherPaused(false)
+            setToast(`✅ Pipeline recovered — watcher resumed`)
             setTimeout(() => setToast(null), 6000)
           }
         } catch (_) {}
@@ -110,7 +124,39 @@ export default function Layout() {
           ))}
         </div>
 
-        <div className="p-4 border-t border-slate-700">
+        <div className="p-4 border-t border-slate-700 space-y-1">
+          {/* Watcher toggle */}
+          <button
+            disabled={watcherToggling}
+            onClick={async () => {
+              setWatcherToggling(true)
+              try {
+                if (watcherPaused) {
+                  await api.resumeWatcher()
+                  setWatcherPaused(false)
+                  setPipelineAlert(null)
+                  setToast('▶ Watcher resumed')
+                } else {
+                  await api.pauseWatcher()
+                  setWatcherPaused(true)
+                  setToast('⏸ Watcher paused')
+                }
+                setTimeout(() => setToast(null), 4000)
+              } catch (e) {
+                setToast(`❌ ${e.message}`)
+                setTimeout(() => setToast(null), 4000)
+              } finally {
+                setWatcherToggling(false)
+              }
+            }}
+            className={`w-full text-left text-sm px-3 py-2 rounded-md transition-colors ${
+              watcherPaused
+                ? 'text-yellow-400 hover:bg-slate-700 hover:text-yellow-300'
+                : 'text-slate-400 hover:bg-slate-700 hover:text-white'
+            } disabled:opacity-50`}
+          >
+            {watcherToggling ? '⏳ …' : watcherPaused ? '▶ Resume Watcher' : '⏸ Pause Watcher'}
+          </button>
           <button
             onClick={logout}
             className="w-full text-left text-sm text-slate-400 hover:text-white transition-colors px-3 py-2 rounded-md hover:bg-slate-700"

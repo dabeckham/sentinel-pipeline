@@ -69,6 +69,9 @@ export const api = {
   deleteUser: (id) => req('DELETE', `/users/${id}`),
   config: () => req('GET', '/config'),
   setConfig: (data) => req('PUT', '/config', data),
+  pipelineStatus:  () => req('GET',  '/pipeline/status'),
+  pauseWatcher:    () => req('POST', '/pipeline/watcher/pause'),
+  resumeWatcher:   () => req('POST', '/pipeline/watcher/resume'),
 }
 
 export function wsUrl() {
