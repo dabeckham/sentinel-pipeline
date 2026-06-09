@@ -31,8 +31,11 @@ async function req(method, path, body) {
 export const api = {
   login: (username, password) => req('POST', '/auth/login', { username, password }),
   stats: () => req('GET', '/stats'),
-  jobs: (page = 1, pageSize = 25, status = '') =>
-    req('GET', `/jobs?page=${page}&page_size=${pageSize}${status ? `&status=${status}` : ''}`),
+  jobs: (page = 1, pageSize = 25, status = []) => {
+    const statuses = Array.isArray(status) ? status : (status ? [status] : [])
+    const statusQs = statuses.map(s => `&status=${encodeURIComponent(s)}`).join('')
+    return req('GET', `/jobs?page=${page}&page_size=${pageSize}${statusQs}`)
+  },
   job: (id) => req('GET', `/jobs/${id}`),
   cancelJob:  (id) => req('POST',   `/jobs/${id}/cancel`),
   pauseJob:   (id) => req('POST',   `/jobs/${id}/pause`),
@@ -72,6 +75,9 @@ export const api = {
   pipelineStatus:  () => req('GET',  '/pipeline/status'),
   pauseWatcher:    () => req('POST', '/pipeline/watcher/pause'),
   resumeWatcher:   () => req('POST', '/pipeline/watcher/resume'),
+  dlxPurge:        (queue) => req('DELETE', `/dlx/purge?queue=${encodeURIComponent(queue)}`),
+  suspendWorker:   (id)    => req('POST', `/workers/${encodeURIComponent(id)}/suspend`),
+  resumeWorker:    (id)    => req('POST', `/workers/${encodeURIComponent(id)}/resume`),
 }
 
 export function wsUrl() {

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     rabbitmq_vhost: str = "/"
     queue_motion_results: str = "motion_results"
     queue_oc_results: str = "oc_results"
+    orchestrator_url: str = "http://orchestrator:8000"
 
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "sentinel"

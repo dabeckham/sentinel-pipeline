@@ -125,6 +125,21 @@ def _handle_message(body: bytes):
         log.error("oc_result_bad_json")
         return
 
+    # Worker lifecycle events (online / offline / heartbeat)
+    if msg.get("worker_event"):
+        from app.services import worker_registry
+        event     = msg["worker_event"]
+        worker_id = msg.get("worker_id", "unknown")
+        if event == "online":
+            worker_registry.on_online(worker_id, msg.get("worker_type"), msg.get("device"))
+            log.info("worker_online", worker_id=worker_id)
+        elif event == "offline":
+            worker_registry.on_offline(worker_id)
+            log.info("worker_offline", worker_id=worker_id)
+        elif event == "heartbeat":
+            worker_registry.on_heartbeat(worker_id)
+        return
+
     job_id = msg.get("job_id")
 
     # Generic worker status update — any worker (current or future) sends:
@@ -139,14 +154,28 @@ def _handle_message(body: bytes):
             log.warning("worker_status_unknown", job_id=job_id, status=new_status_str)
             return
 
+        # Update worker registry regardless of whether the job is still active
+        worker_id = msg.get("worker_id")
+        if worker_id:
+            from app.services import worker_registry
+            if new_status in (JobStatus.md_processing, JobStatus.oc_processing):
+                worker_registry.update(worker_id, "processing", job_id)
+            elif new_status in (JobStatus.md_complete,):
+                worker_registry.update(worker_id, "idle", None)
+
         db = SessionLocal()
         try:
             job = db.query(Job).filter_by(id=job_id).first()
-            if not job or job.status in (JobStatus.failed, JobStatus.paused):
+            if not job or job.status == JobStatus.paused:
+                return
+            # Allow failed transitions even if already failed (idempotent)
+            if job.status == JobStatus.failed and new_status != JobStatus.failed:
                 return
 
             job.status = new_status
-            worker_id = msg.get("worker_id")
+            if new_status == JobStatus.failed:
+                job.error_message = msg.get("error", "Worker error")
+                job.completed_at  = datetime.now(timezone.utc)
 
             # Stamp timing fields by status
             now = datetime.now(timezone.utc)
@@ -208,9 +237,10 @@ def _handle_message(body: bytes):
             log.info("oc_result_dropped_inactive", job_id=job_id, status=job.status.value)
             return
 
-        # Mark oc_processing + stamp start time
-        job.status     = JobStatus.oc_processing
-        job.oc_started_at = datetime.now(timezone.utc)
+        # Mark oc_processing + stamp start time (only if not already set by status update)
+        job.status = JobStatus.oc_processing
+        if job.oc_started_at is None:
+            job.oc_started_at = datetime.now(timezone.utc)
         if msg.get("worker_id"):
             job.oc_worker_id = msg["worker_id"]
 
@@ -269,6 +299,17 @@ def _handle_message(body: bytes):
             job.completed_at = datetime.now(timezone.utc)
             _classify_tracks(db, job_id)
             log.info("job_completed", job_id=job_id, detections=len(detections))
+            # OC worker is now idle; record performance stats
+            oc_worker_id = msg.get("worker_id")
+            if oc_worker_id:
+                from app.services import worker_registry
+                worker_registry.update(oc_worker_id, "idle", None)
+                worker_registry.record_job_stats(
+                    oc_worker_id,
+                    elapsed_s=msg.get("elapsed_s", 0.0),
+                    fps=msg.get("fps", 0.0),
+                    frames=msg.get("frames_processed", 0),
+                )
 
         db.commit()
 
