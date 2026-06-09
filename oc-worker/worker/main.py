@@ -96,81 +96,61 @@ def process_job(msg: dict, ch, method):
         # ── Run TRT + ByteTrack ───────────────────────────────────────────────
         detections = process_job_video(video_path, motion_frames)
 
-        # ── Best-shot selection + result publishing ───────────────────────────
-        # Need original frame dimensions for best-shot score normalisation
+        # ── Best-shot selection ───────────────────────────────────────────────
         cap = cv2.VideoCapture(video_path)
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
-        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 1920
         cap.release()
 
-        # Group detections by track so we can re-open the video once per
-        # best-shot candidate rather than keeping all frames in RAM.
-        # For now we use bbox centre-Y score without re-reading the frame —
-        # the frame is re-read only if this is actually the new best shot.
         best_candidates: dict[int, dict] = {}   # track_id → best detection so far
         for det in detections:
             track_id = det["track_id"]
-            bbox     = det["bbox"]
-            bbox_cy  = bbox["y"] + bbox["h"] / 2
+            bbox_cy  = det["bbox"]["y"] + det["bbox"]["h"] / 2
             score    = abs(bbox_cy / frame_h - 0.5)
             key      = (job_id, track_id)
             if score < _best_shot_score.get(key, 1.0):
                 _best_shot_score[key] = score
-                best_candidates[track_id] = det   # will upload frame below
+                best_candidates[track_id] = det
 
-        # Upload best-shot frames (re-read video for only the needed frames)
+        # Upload best-shot frames (sequential read, only needed frame indices)
         if best_candidates:
+            needed_frames = {det["frame_index"]: track_id
+                             for track_id, det in best_candidates.items()}
+            max_fi = max(needed_frames)
             cap = cv2.VideoCapture(video_path)
-            for track_id, det in best_candidates.items():
-                cap.set(cv2.CAP_PROP_POS_FRAMES, det["frame_index"])
+            current = 0
+            while current <= max_fi:
                 ok, frame = cap.read()
-                if ok:
-                    best_name  = f"{job_id}/track_{track_id:06d}_best.jpg"
-                    frame_copy = frame.copy()
+                if not ok:
+                    break
+                if current in needed_frames:
+                    tid  = needed_frames[current]
+                    name = f"{job_id}/track_{tid:06d}_best.jpg"
                     _upload_pool.submit(
                         _upload_best_shot,
                         settings.minio_bucket_snapshots,
-                        best_name,
-                        frame_copy,
+                        name,
+                        frame.copy(),
                     )
+                current += 1
             cap.release()
 
-        # Publish per-detection results to oc_results queue
+        # ── Publish ONE message with all detections bundled ───────────────────
+        # Annotate each detection with its best-shot path.
+        best_shot_map = {
+            tid: f"{job_id}/track_{tid:06d}_best.jpg"
+            for tid in best_candidates
+        }
         for det in detections:
-            track_id  = det["track_id"]
-            best_name = f"{job_id}/track_{track_id:06d}_best.jpg"
-            is_best   = track_id in best_candidates
+            det["snapshot_path"] = best_shot_map.get(det["track_id"])
+            det["snapshot_bbox"] = det["bbox"] if det["track_id"] in best_candidates else None
 
-            ch.basic_publish(
-                exchange="",
-                routing_key=settings.queue_oc_results,
-                body=json.dumps({
-                    "job_id":          job_id,
-                    "track_id":        track_id,
-                    "frame_index":     det["frame_index"],
-                    "timestamp_ms":    det["timestamp_ms"],
-                    "class_label":     det["class_label"],
-                    "confidence":      det["confidence"],
-                    "bbox":            det["bbox"],
-                    "snapshot_path":   best_name,
-                    "snapshot_bbox":   det["bbox"] if is_best else None,
-                    "crop_path":       None,
-                    "is_final":        False,
-                    "worker_id":       WORKER_ID,
-                    "osd_camera_name": osd_camera_name,
-                    "osd_recorded_at": osd_recorded_at,
-                }),
-                properties=pika.BasicProperties(
-                    delivery_mode=2, content_type="application/json"),
-            )
-
-        # Final marker — tells orchestrator this job's OC processing is complete
         ch.basic_publish(
             exchange="",
             routing_key=settings.queue_oc_results,
             body=json.dumps({
                 "job_id":          job_id,
                 "is_final":        True,
+                "detections":      detections,
                 "worker_id":       WORKER_ID,
                 "osd_camera_name": osd_camera_name,
                 "osd_recorded_at": osd_recorded_at,

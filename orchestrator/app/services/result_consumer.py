@@ -169,16 +169,9 @@ def _handle_message(body: bytes):
             db.close()
         return
 
-    track_id = msg.get("track_id")
-    frame_index = msg.get("frame_index")
-    class_label = msg.get("class_label")
-    confidence = msg.get("confidence", 0.0)
-    bbox = msg.get("bbox")
-    snapshot_path = msg.get("snapshot_path")
-    is_final = msg.get("is_final", False)
+    is_final        = msg.get("is_final", False)
     osd_camera_name = msg.get("osd_camera_name")
     osd_recorded_at_str = msg.get("osd_recorded_at")
-    timestamp_ms = msg.get("timestamp_ms", 0)
 
     # Parse OSD recorded_at ISO string once
     osd_recorded_at: datetime | None = None
@@ -188,35 +181,49 @@ def _handle_message(body: bytes):
         except ValueError:
             pass
 
+    # OC workers now send one message per job with all detections bundled.
+    # The message always has is_final=True.
+    detections = msg.get("detections", [])
+
     db = SessionLocal()
     try:
-        # Update job status on first oc_result
         job = db.query(Job).filter_by(id=job_id).first()
         if job is None:
             log.error("oc_result_unknown_job", job_id=job_id)
             return
 
-        # Drop results for jobs that were paused or killed while in flight
         if job.status in (JobStatus.failed, JobStatus.paused):
             log.info("oc_result_dropped_inactive", job_id=job_id, status=job.status.value)
             return
 
-        if job.status in (JobStatus.queued, JobStatus.md_processing, JobStatus.md_complete):
-            job.status = JobStatus.oc_processing
-            job.oc_started_at = datetime.now(timezone.utc)
-            if msg.get("worker_id"):
-                job.oc_worker_id = msg["worker_id"]
+        # Mark oc_processing + stamp start time
+        job.status     = JobStatus.oc_processing
+        job.oc_started_at = datetime.now(timezone.utc)
+        if msg.get("worker_id"):
+            job.oc_worker_id = msg["worker_id"]
 
-        # Save OSD metadata to job on first result that carries it
         if osd_camera_name and job.camera_name is None:
             job.camera_name = osd_camera_name
         if osd_recorded_at and job.recorded_at is None:
             job.recorded_at = osd_recorded_at
 
-        if track_id is not None:
-            track = _get_or_create_track(db, job_id, track_id)
+        # ── Bulk-build tracks + detections in one transaction ─────────────────
+        track_map: dict[int, Track] = {}
 
-            # Update track aggregate fields
+        for det in detections:
+            track_id    = det["track_id"]
+            frame_index = det["frame_index"]
+            timestamp_ms = det.get("timestamp_ms", 0)
+            confidence  = det.get("confidence", 0.0)
+            class_label = det.get("class_label")
+            bbox        = det.get("bbox")
+            snapshot_path = det.get("snapshot_path")
+            snapshot_bbox = det.get("snapshot_bbox")
+
+            if track_id not in track_map:
+                track_map[track_id] = _get_or_create_track(db, job_id, track_id)
+            track = track_map[track_id]
+
             if confidence > (track.confidence_max or 0.0):
                 track.confidence_max = confidence
             if class_label:
@@ -224,17 +231,14 @@ def _handle_message(body: bytes):
             if frame_index is not None:
                 if track.first_frame is None or frame_index < track.first_frame:
                     track.first_frame = frame_index
-                    # Compute wall-clock start time if OSD timestamp available
                     if osd_recorded_at:
                         track.started_at = osd_recorded_at + timedelta(milliseconds=timestamp_ms)
                 if track.last_frame is None or frame_index > track.last_frame:
                     track.last_frame = frame_index
-                    # Update wall-clock end time with each new latest frame
                     if osd_recorded_at:
                         track.ended_at = osd_recorded_at + timedelta(milliseconds=timestamp_ms)
             if snapshot_path:
                 track.snapshot_path = snapshot_path
-            snapshot_bbox = msg.get("snapshot_bbox")
             if snapshot_bbox:
                 track.snapshot_bbox = snapshot_bbox
 
@@ -245,18 +249,17 @@ def _handle_message(body: bytes):
                 class_label=class_label,
                 confidence=confidence,
                 bbox=bbox,
-                crop_path=msg.get("crop_path"),
+                crop_path=None,
             ))
 
         if is_final:
             job.status = JobStatus.completed
             job.completed_at = datetime.now(timezone.utc)
             _classify_tracks(db, job_id)
-            log.info("job_completed", job_id=job_id)
+            log.info("job_completed", job_id=job_id, detections=len(detections))
 
         db.commit()
 
-        # Broadcast to WebSocket clients (fire-and-forget — import here to avoid circular)
         try:
             from app.api.ws import broadcast
             from app.services.event_loop import get_loop
@@ -268,7 +271,7 @@ def _handle_message(body: bytes):
                     event["completed_at"] = job.completed_at.isoformat()
                 asyncio.run_coroutine_threadsafe(broadcast(event), loop)
         except Exception:
-            pass  # WebSocket broadcast is best-effort
+            pass
 
     except Exception:
         log.exception("oc_result_write_error", job_id=job_id)
