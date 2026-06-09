@@ -144,76 +144,102 @@ def _broadcast(event_type: str, payload: dict):
 
 # ── Monitor loop ──────────────────────────────────────────────────────────────
 
+class _MonitorState:
+    """Mutable state shared between startup_health_check and _monitor_loop."""
+    watcher_paused = False
+    last_alert_at  = 0.0
+
+
+_state = _MonitorState()
+
+
+def _run_check(settings, db_factory):
+    """
+    Run one health check cycle.  Updates _state and pauses/resumes the
+    watcher as needed.  Safe to call from any thread.
+    """
+    from app.services.watcher import pause_watcher, resume_watcher
+
+    mq    = _probe_rabbitmq(settings)
+    stuck = _probe_stuck_jobs(db_factory)
+
+    oc_backed_up = len(stuck) > 0
+    dlx_backed   = mq["dlx_depth"] >= DLX_WARN_DEPTH
+
+    if oc_backed_up or dlx_backed:
+        diagnosis    = _diagnose(mq, stuck)
+        is_new_fault = not _state.watcher_paused
+
+        if is_new_fault:
+            pause_watcher()
+            _state.watcher_paused = True
+
+        now = time.time()
+        if is_new_fault or (now - _state.last_alert_at) >= ALERT_REPEAT_INTERVAL:
+            _state.last_alert_at = now
+            log.error(
+                "pipeline_stalled",
+                diagnosis=diagnosis,
+                oc_consumers=mq["consumers"],
+                queue_depth=mq["depth"],
+                dlx_depth=mq["dlx_depth"],
+                stuck_job_ids=[s["id"] for s in stuck],
+                watcher_paused=True,
+            )
+            _broadcast("pipeline_alert", {
+                "diagnosis":    diagnosis,
+                "oc_consumers": mq["consumers"],
+                "queue_depth":  mq["depth"],
+                "dlx_depth":    mq["dlx_depth"],
+                "stuck_jobs":   [s["id"] for s in stuck],
+            })
+    else:
+        if _state.watcher_paused:
+            resume_watcher()
+            _state.watcher_paused = False
+            _state.last_alert_at  = 0.0
+
+            log.info("pipeline_recovered",
+                     oc_consumers=mq["consumers"],
+                     queue_depth=mq["depth"])
+            _broadcast("pipeline_recovery", {
+                "oc_consumers": mq["consumers"],
+            })
+
+
+def startup_health_check():
+    """
+    Synchronous check run once during lifespan startup — BEFORE the file
+    watcher is started.  If the pipeline is already backed up (e.g. the
+    orchestrator restarted mid-backlog) the watcher pause flag is set here
+    so start_watcher() is never called in the first place.
+    """
+    from app.config import get_settings
+    from app.db import SessionLocal
+
+    log.info("health_monitor_startup_check")
+    try:
+        _run_check(get_settings(), SessionLocal)
+    except Exception:
+        log.exception("health_monitor_startup_check_error")
+
+
 def _monitor_loop():
     from app.config import get_settings
     from app.db import SessionLocal
-    from app.services.watcher import pause_watcher, resume_watcher
 
-    settings       = get_settings()
-    last_alert_at  = 0.0
-    watcher_paused = False
+    settings = get_settings()
 
     log.info("health_monitor_running",
              poll_interval=POLL_INTERVAL,
              stuck_threshold_s=STUCK_THRESHOLD)
 
     while True:
+        # Sleep first — startup_health_check() already ran an immediate check
+        # before the loop started.
         time.sleep(POLL_INTERVAL)
         try:
-            mq    = _probe_rabbitmq(settings)
-            stuck = _probe_stuck_jobs(SessionLocal)
-
-            # Unhealthy: any md_complete jobs older than STUCK_THRESHOLD
-            # (pipeline is backed up regardless of whether workers are connected),
-            # OR the DLX is filling up with worker crashes.
-            oc_backed_up = len(stuck) > 0
-            dlx_backed   = mq["dlx_depth"] >= DLX_WARN_DEPTH
-
-            if oc_backed_up or dlx_backed:
-                diagnosis = _diagnose(mq, stuck)
-
-                # Pause the watcher the first time we go unhealthy
-                is_new_fault = not watcher_paused
-                if is_new_fault:
-                    pause_watcher()
-                    watcher_paused = True
-
-                now = time.time()
-                # Alert on first fault, then repeat every ALERT_REPEAT_INTERVAL
-                if is_new_fault or (now - last_alert_at) >= ALERT_REPEAT_INTERVAL:
-                    last_alert_at = now
-                    log.error(
-                        "pipeline_stalled",
-                        diagnosis=diagnosis,
-                        oc_consumers=mq["consumers"],
-                        queue_depth=mq["depth"],
-                        dlx_depth=mq["dlx_depth"],
-                        stuck_job_ids=[s["id"] for s in stuck],
-                        watcher_paused=True,
-                    )
-                    _broadcast("pipeline_alert", {
-                        "diagnosis":    diagnosis,
-                        "oc_consumers": mq["consumers"],
-                        "queue_depth":  mq["depth"],
-                        "dlx_depth":    mq["dlx_depth"],
-                        "stuck_jobs":   [s["id"] for s in stuck],
-                    })
-
-            else:
-                if watcher_paused:
-                    # Pipeline healthy again — restart the watcher
-                    # resume_watcher() calls scan_ingest_missed() internally
-                    resume_watcher()
-                    watcher_paused = False
-                    last_alert_at  = 0.0
-
-                    log.info("pipeline_recovered",
-                             oc_consumers=mq["consumers"],
-                             queue_depth=mq["depth"])
-                    _broadcast("pipeline_recovery", {
-                        "oc_consumers": mq["consumers"],
-                    })
-
+            _run_check(settings, SessionLocal)
         except Exception:
             log.exception("health_monitor_loop_error")
 

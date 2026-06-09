@@ -57,11 +57,14 @@ async def lifespan(app: FastAPI):
     from app.services.event_loop import set_loop
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
-    from app.services.health_monitor import start_health_monitor
+    from app.services.health_monitor import start_health_monitor, startup_health_check
 
     import asyncio
     set_loop(asyncio.get_event_loop())
 
+    # Check pipeline health BEFORE starting the watcher so we don't queue
+    # new files into a backed-up pipeline on every orchestrator restart.
+    startup_health_check()
     start_watcher()
 
     consumer_thread = threading.Thread(
