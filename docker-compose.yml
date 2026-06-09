@@ -177,6 +177,7 @@ services:
       OC_USE_GPU: "false"
     volumes:
       - yolo-models:/root/.config/Ultralytics
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
     networks:
       - sentinel-net
 
