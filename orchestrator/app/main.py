@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
     from app.services.event_loop import set_loop
     from app.services.watcher import start_watcher
     from app.services.result_consumer import start_result_consumer
+    from app.services.health_monitor import start_health_monitor
 
     import asyncio
     set_loop(asyncio.get_event_loop())
@@ -67,6 +68,8 @@ async def lifespan(app: FastAPI):
         target=start_result_consumer, daemon=True, name="oc-result-consumer"
     )
     consumer_thread.start()
+
+    start_health_monitor()
 
     yield
 

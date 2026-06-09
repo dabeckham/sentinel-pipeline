@@ -12,8 +12,9 @@ const NAV = [
 
 export default function Layout() {
   const navigate = useNavigate()
-  const [wsStatus, setWsStatus] = useState('connecting')
-  const [toast, setToast] = useState(null)
+  const [wsStatus, setWsStatus]       = useState('connecting')
+  const [toast, setToast]             = useState(null)
+  const [pipelineAlert, setPipelineAlert] = useState(null)  // {diagnosis, details} | null
   const wsRef = useRef(null)
 
   useEffect(() => {
@@ -37,6 +38,12 @@ export default function Layout() {
             const icon = msg.status === 'completed' ? '✅' : '❌'
             setToast(`${icon} Job #${msg.job_id} ${msg.status}`)
             setTimeout(() => setToast(null), 4000)
+          } else if (msg.type === 'pipeline_alert') {
+            setPipelineAlert({ diagnosis: msg.diagnosis, details: msg })
+          } else if (msg.type === 'pipeline_recovery') {
+            setPipelineAlert(null)
+            setToast(`✅ Pipeline recovered — ${msg.pending_released ?? 0} held job(s) released`)
+            setTimeout(() => setToast(null), 6000)
           }
         } catch (_) {}
       }
@@ -115,6 +122,27 @@ export default function Layout() {
 
       {/* Main — pb-10 leaves room for the metrics bar */}
       <main className="flex-1 overflow-y-auto bg-slate-900 pb-10">
+        {/* Pipeline alert banner — shown when health monitor opens circuit breaker */}
+        {pipelineAlert && (
+          <div className="bg-red-950 border-b border-red-700 px-4 py-3 flex items-start gap-3">
+            <span className="text-red-400 text-lg shrink-0 mt-0.5">⚠️</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-red-300 text-sm font-semibold">Pipeline stalled — new jobs are being held</p>
+              <p className="text-red-400 text-xs mt-0.5 break-words">{pipelineAlert.diagnosis}</p>
+              {pipelineAlert.details?.stuck_jobs?.length > 0 && (
+                <p className="text-red-500 text-xs mt-0.5">
+                  Stuck jobs: {pipelineAlert.details.stuck_jobs.join(', ')}
+                  {pipelineAlert.details.dlx_depth > 0 && ` · ${pipelineAlert.details.dlx_depth} in DLX`}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setPipelineAlert(null)}
+              className="text-red-600 hover:text-red-400 text-lg shrink-0"
+              title="Dismiss (alert will reappear if problem persists)"
+            >×</button>
+          </div>
+        )}
         <Outlet />
       </main>
 

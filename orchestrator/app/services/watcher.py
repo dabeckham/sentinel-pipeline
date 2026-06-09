@@ -66,24 +66,31 @@ class IngestHandler(FileSystemEventHandler):
                 log.info("ingest_duplicate_skipped", path=path, existing_job_id=existing.id)
                 return
 
+            from app.services.health_monitor import is_ingest_blocked
+            blocked, reason = is_ingest_blocked()
+
             job = Job(
                 file_path=path,
                 file_hash=file_hash,
                 source_path=path,
-                status=JobStatus.queued,
+                status=JobStatus.pending if blocked else JobStatus.queued,
             )
             db.add(job)
             db.commit()
             db.refresh(job)
 
-            settings = get_settings()
-            amqp.publish(settings.queue_ingest, {
-                "job_id": job.id,
-                "video_path": path,
-                "source_type": "ftp",
-                "options": {},
-            })
-            log.info("ingest_job_queued", job_id=job.id, path=path)
+            if blocked:
+                log.warning("ingest_job_held_circuit_open",
+                            job_id=job.id, path=path, reason=reason)
+            else:
+                settings = get_settings()
+                amqp.publish(settings.queue_ingest, {
+                    "job_id": job.id,
+                    "video_path": path,
+                    "source_type": "ftp",
+                    "options": {},
+                })
+                log.info("ingest_job_queued", job_id=job.id, path=path)
 
             # Broadcast to WebSocket clients
             try:
@@ -95,7 +102,7 @@ class IngestHandler(FileSystemEventHandler):
                     event = {
                         "type": "job_update",
                         "job_id": job.id,
-                        "status": "queued",
+                        "status": job.status.value,
                         "file_path": path,
                     }
                     asyncio.run_coroutine_threadsafe(broadcast(event), loop)
