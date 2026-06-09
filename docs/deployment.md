@@ -1,5 +1,5 @@
 # Sentinel Pipeline — Deployment Guide
-*v0.6.0 — All 5 phases complete — Last updated: 2026-06-07 (session 14)*
+*v0.6.0 — All 5 phases complete — Last updated: 2026-06-09 (session 15)*
 
 ---
 
@@ -16,9 +16,9 @@
 | GPU | Physical Index | Default Use | Sentinel Use |
 |---|---|---|---|
 | RTX 3060 | 0 | Frigate (embeddings, detector, ffmpeg) ~5 GB | oc-worker-2 (shared — watch VRAM) |
-| RTX 3060 | 1 | Ollama (unloads when idle) | oc-worker (primary) |
+| RTX 3060 | 1 | Ollama (unloads when idle) | oc-worker, oc-worker-3, oc-worker-4 (primary) |
 
-> Inside the container, Docker always remaps the assigned GPU to device `0`. Set `CUDA_VISIBLE_DEVICES=0` inside the container regardless of which physical GPU is assigned.
+> Inside the container, Docker always remaps the assigned GPU to device `0`. Set `CUDA_VISIBLE_DEVICES=0` inside the container regardless of which physical GPU is assigned.  
 > Monitor GPU 0 VRAM in the MetricsBar — if Frigate starts starving, stop oc-worker-2 with `docker stop sentinel-oc-worker-2`.
 
 ### NAS Mount
@@ -81,7 +81,6 @@ cd sentinel-pipeline
 ### 2. Mount the NAS
 ```bash
 sudo mkdir -p /mnt/ds-one/sentinel-ingest
-# Add to /etc/fstab:
 echo "192.168.55.55:/volume1/FTP/sentinel-ingest /mnt/ds-one/sentinel-ingest nfs ro,defaults,_netdev,nofail 0 0" \
   | sudo tee -a /etc/fstab
 sudo mount -a
@@ -99,67 +98,62 @@ Set these values (generate secrets with `openssl rand -hex 32`):
 ```ini
 # Secrets — generate fresh for every deployment
 JWT_SECRET_KEY=<32-byte hex>
-RABBITMQ_PASSWORD=<16-byte hex>
-POSTGRES_PASSWORD=<16-byte hex>
-MINIO_SECRET_KEY=<16-byte hex>
+RABBITMQ_PASSWORD=<32-byte hex>
+POSTGRES_PASSWORD=<32-byte hex>
+MINIO_SECRET_KEY=<32-byte hex>
 MINIO_ACCESS_KEY=sentinel           # username, not a secret
 
 # Paths
-INGEST_SOURCE_PATH=/mnt/ds-one/sentinel-ingest   # host-side, not used by containers
+INGEST_SOURCE_PATH=/mnt/ds-one/sentinel-ingest   # host-side mount
 INGEST_WATCH_PATH=/ingest                         # container-side
 
 # GPU (see GPU Layout above)
 GPU_DEVICE_ID=1
-
-# Optional: override default admin password on first boot
-# ADMIN_DEFAULT_PASSWORD=changeme   # change this immediately after first login
 ```
 
-> ⚠️ `.env` is in `.gitignore`. **Never commit it.** Keep a secure copy off the host (see DR doc).
+> ⚠️ `.env` is in `.gitignore`. **Never commit it.** Keep a secure copy off the host.
 
 ### 4. Bootstrap RabbitMQ users
-On the very first deployment, RabbitMQ creates the `guest` user only. The Sentinel user must be created manually once:
+
+On the very first deployment, RabbitMQ has no application user. Create it using the env vars inside the container — no credentials in the terminal:
 
 ```bash
 docker compose up -d rabbitmq
 sleep 15
 
-RMQPASS=$(grep RABBITMQ_PASSWORD ~/sentinel-pipeline/.env | cut -d= -f2)
-docker exec sentinel-rabbitmq rabbitmqctl add_user sentinel "$RMQPASS"
-docker exec sentinel-rabbitmq rabbitmqctl set_user_tags sentinel administrator
-docker exec sentinel-rabbitmq rabbitmqctl set_permissions -p / sentinel ".*" ".*" ".*"
+docker exec sentinel-rabbitmq bash -c "
+  rabbitmqctl add_user \$RABBITMQ_DEFAULT_USER \$RABBITMQ_DEFAULT_PASS &&
+  rabbitmqctl set_user_tags \$RABBITMQ_DEFAULT_USER administrator &&
+  rabbitmqctl set_permissions -p / \$RABBITMQ_DEFAULT_USER '.*' '.*' '.*'"
 ```
+
+> ⚠️ **`RABBITMQ_DEFAULT_USER/PASS` env vars only apply on the very first container startup (empty Mnesia).** On any subsequent restart, use this same `add_user` command. `change_password` silently does nothing if the user doesn't exist.
 
 ### 5. Create the YOLO model cache volume
 
-The OC worker caches `yolo11s.pt` in a named volume at `/app/models`. Create it once before first start:
+The OC worker auto-exports `yolo11s.pt → yolo11s.engine` (TRT FP16) on first run and caches it in a named volume. Create the volume before first start:
 
 ```bash
 docker volume create sentinel-pipeline_yolo-models
 ```
 
-The model (~20 MB) downloads on the first job and is reused across restarts. Without this volume it re-downloads every container start.
+The 4-minute TRT export runs once. All 4 OC worker containers share the volume — only one worker does the export.
 
 ### 6. Start all services
 
-**GPU mode (recommended — OC workers on GPU 1):**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-```
-
-**CPU-only mode:**
-```bash
+# GPU mode — automatic; docker-compose.override.yml is auto-merged
 docker compose up -d
+
+# Verify all containers are up
+docker compose ps
 ```
 
-> ⚠️ **Always use both compose files together for GPU mode.** Running `docker-compose.gpu.yml` alone causes the oc-worker to join the wrong Docker network (DNS for `rabbitmq` fails) and to miss env vars (RabbitMQ auth fails).
+> ✅ **No `-f` flags needed.** `docker-compose.override.yml` is automatically merged by Docker Compose. The full GPU stack (4 OC workers) starts with plain `docker compose up -d`.
 
 ### 7. Verify deployment
 ```bash
-# All containers healthy
-docker compose ps
-
-# API health (should show version 0.5.0)
+# API health
 curl http://localhost:8000/api/health
 
 # Get a JWT token and check stats
@@ -169,19 +163,12 @@ TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 curl -s http://localhost:8000/api/stats -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 
-# Browser UI
-open http://192.168.55.10:3000
+# Check workers registered (should see 4 OC workers + MD worker within ~15s)
+curl -s http://localhost:8000/api/workers -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
 ### 8. Change default admin password
-Log in to the UI at http://192.168.55.10:3000 (admin / changeme) and change the password immediately, or via API:
-```bash
-# Get token first (see step 6), then:
-curl -s -X PATCH http://localhost:8000/api/users/1 \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"password":"YourNewSecurePassword"}'
-```
+Log in to http://192.168.55.10:3000 (admin / changeme) and change immediately.
 
 ---
 
@@ -192,13 +179,12 @@ curl -s -X PATCH http://localhost:8000/api/users/1 \
 cd ~/sentinel-pipeline
 git pull
 
-# Orchestrator (source baked into image — restart alone won't pick up changes)
+# Orchestrator (source baked into image)
 docker compose build orchestrator && docker compose up -d orchestrator
 
-# OC worker — MUST use both compose files; use CACHEBUST to bust the COPY layer
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml build \
-  --build-arg CACHEBUST=$(date +%s) oc-worker
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
+# OC workers — one build updates all 4 containers
+docker compose build oc-worker --build-arg CACHEBUST=$(date +%s)
+docker compose up -d oc-worker oc-worker-2 oc-worker-3 oc-worker-4
 
 # MD worker
 docker compose build md-worker && docker compose up -d md-worker
@@ -207,22 +193,22 @@ docker compose build md-worker && docker compose up -d md-worker
 docker compose build ui && docker compose up -d ui
 ```
 
-### Full clean rebuild (when system deps or requirements.txt changed)
+> **CACHEBUST:** `Dockerfile.gpu` declares `ARG CACHEBUST=1` before `COPY . .`. Pass `--build-arg CACHEBUST=$(date +%s)` to force code to be re-copied without a full `--no-cache` rebuild (which re-downloads TRT/CUDA layers and takes 10+ minutes).
+
+> **One image, four containers:** Workers 2/3/4 use `image: sentinel-oc-worker-gpu:latest` — they cannot fall behind the primary. Building `oc-worker` updates all four.
+
+### Full clean rebuild
 ```bash
 git pull
 docker compose build --no-cache
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml build --no-cache oc-worker
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose build --no-cache oc-worker
+docker compose up -d
 ```
-
-> **Note on `--no-cache` for oc-worker:** The GPU Dockerfile uses `ubuntu22.04` + `python3.10`. The `deadsnakes` PPA is not used (unreachable from the build host). `--no-cache` is safe and will install python3.10 from default ubuntu repos. `torch+cu124` installs from PyPI without issues.
-
-> **CACHEBUST arg:** `docker-compose.gpu.yml` declares `ARG CACHEBUST=1` before the `COPY . .` layer. Pass `--build-arg CACHEBUST=$(date +%s)` to force code to be re-copied without doing a full `--no-cache` rebuild (which re-downloads torch/CUDA layers and takes 10+ minutes).
 
 ### Restarting a single service
 ```bash
 docker compose restart orchestrator
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
+docker compose up -d oc-worker oc-worker-2 oc-worker-3 oc-worker-4
 ```
 
 ---
@@ -231,89 +217,62 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker
 
 On every orchestrator startup, two recovery routines run automatically before the file watcher starts:
 
-1. **`recover_stuck_jobs()`** — finds jobs in `queued`, `md_processing`, or `oc_processing` state from the previous run, resets them to `queued`, and re-publishes to the ingest queue. Handles power-loss and worker crashes transparently.
+1. **`recover_stuck_jobs()`** — finds jobs in `queued`, `md_processing`, or `oc_processing` state, resets to `queued`, re-publishes to ingest queue.
+2. **`scan_ingest_missed()`** — walks `/ingest`, SHA-256 hashes each video file, creates a job for any file with no DB record. Safe to run repeatedly.
 
-2. **`scan_ingest_missed()`** — walks `/ingest`, SHA-256 hashes each video file, and creates a job for any file with no DB record. Handles files that arrived while the orchestrator was down. Safe to run repeatedly — the hash check prevents double-ingestion.
+---
 
-You will see these log lines on startup:
-```
-startup_recovery_no_stuck_jobs            (nothing stuck)
-startup_recovery_requeueing job_id=X      (recovering a stuck job)
-startup_scan_found_files count=12         (pre-existing files found)
-startup_scan_new_file path=/ingest/...    (each new file submitted)
-startup_scan_complete new_jobs=12
-```
+## Worker Self-Healing
+
+The worker registry is in-memory inside the orchestrator. After an orchestrator restart, workers re-register automatically within one heartbeat cycle (~15 seconds):
+
+1. **Heartbeats carry type+device** — registry bootstraps any unknown worker from heartbeat data
+2. **Workers detect 404** — if the status poll returns 404 (registry lost), the worker re-publishes its `online` event for full re-registration
+
+No worker restarts required after orchestrator restarts.
 
 ---
 
 ## Scaling Workers
+
+### 4 OC workers (current default)
+
+All 4 are defined in `docker-compose.override.yml` and start automatically with `docker compose up -d`:
+- `oc-worker`, `oc-worker-3`, `oc-worker-4` → GPU 1
+- `oc-worker-2` → GPU 0 (shared with Frigate)
+
+### Stop GPU 0 worker if Frigate starves
+```bash
+docker stop sentinel-oc-worker-2
+docker start sentinel-oc-worker-2   # when ready to resume
+```
 
 ### More MD workers
 ```bash
 docker compose up -d --scale md-worker=3
 ```
 
-### More OC workers (CPU)
-```bash
-docker compose up -d --scale oc-worker=4
-```
-
-### Second OC worker on GPU 0 (runs alongside Frigate — watch VRAM)
-```bash
-# Build and start oc-worker-2 (targets GPU 0)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml build oc-worker-2
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker-2
-
-# Stop oc-worker-2 if GPU 0 VRAM pressure is too high
-docker stop sentinel-oc-worker-2
-
-# Both OC workers at once
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d oc-worker oc-worker-2
-```
-
 ---
 
 ## Monitoring
 
-### Queue depths (RabbitMQ management UI)
+### Queue depths
 http://192.168.55.10:15672 → Queues tab
 
 Watch:
 - `ingest` — files waiting for MD worker
-- `motion_results` — frames waiting for OC worker
-- `oc_results` — results waiting to be written to DB
+- `motion_results` — job descriptors waiting for OC worker
+- `oc_results` — results + worker events waiting to be written
 - `dlx.*` — dead-letter queues; these should normally be empty
 
+### Worker panel
+The UI at http://192.168.55.10:3000 shows a live worker panel on the Pipeline Status page. Labels: `OC-GPU-1`, `MD-CPU-1`, etc. Status dots: green=idle, yellow=processing, red=suspended. Hover for stats callout.
+
 ### Snapshot storage cleanup
-
-The OC worker saves a full-frame snapshot for every detection (`track_{id}_f{frame}.jpg`) for in-browser playback. These accumulate quickly. Periodically clean them up, keeping only the best-shot thumbnail (`_best.jpg`) per track:
-
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"YOUR_PASSWORD"}' \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# Cleanup all jobs (dry-run: check response before running in prod)
+TOKEN=...  # get from login
 curl -s -X POST http://localhost:8000/api/snapshots/cleanup \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
-
-# Cleanup single job
-curl -s -X POST "http://localhost:8000/api/snapshots/cleanup?job_id=42" \
-  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
-```
-
-Response includes `deleted` (count), `freed_bytes`, and `errors`.
-
-### Requeue dead-lettered messages (admin only)
-```bash
-# Check counts
-curl -s http://localhost:8000/api/dlx/counts \
-  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
-
-# Requeue up to 100 messages from dlx.ingest
-curl -s -X POST "http://localhost:8000/api/dlx/requeue?queue=dlx.ingest&limit=100" \
-  -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Logs
@@ -321,7 +280,6 @@ curl -s -X POST "http://localhost:8000/api/dlx/requeue?queue=dlx.ingest&limit=10
 docker compose logs -f orchestrator
 docker compose logs -f md-worker
 docker compose logs -f oc-worker
-docker compose logs --tail=100 orchestrator
 ```
 
 ### GPU utilization
@@ -336,25 +294,27 @@ nvidia-smi             # snapshot
 
 Migrations run automatically on orchestrator startup via Alembic.
 
-**Current migration head: `0005`**
+**Current migration head: `0008`**
 
 | Revision | Description |
 |---|---|
 | 0001 | Initial schema (jobs, tracks, detections, users) |
 | 0002 | OSD metadata (camera_name, recorded_at, started_at, ended_at on tracks/jobs) |
-| 0003 | snapshot_bbox JSON column on tracks (best-shot frame bbox for UI overlay) |
-| 0004 | track_type String(16) column + index on tracks (moving/stationary classification) |
-| 0005 | md_complete enum value added to JobStatus; md_started_at, md_completed_at, oc_started_at on jobs |
+| 0003 | snapshot_bbox JSON column on tracks |
+| 0004 | track_type String(16) column + index on tracks |
+| 0005 | md_complete enum value; md_started_at, md_completed_at, oc_started_at on jobs |
+| 0006 | md_worker_id, oc_worker_id columns on jobs |
+| 0007 | `paused` value added to jobstatus enum |
+| 0008 | pipeline_settings key-value table |
 
 To run or inspect manually:
 ```bash
-# Must run from /app inside the container — docker compose exec doesn't set the CWD
 docker exec sentinel-orchestrator bash -c 'cd /app && alembic upgrade head'
 docker exec sentinel-orchestrator bash -c 'cd /app && alembic current'
 docker exec sentinel-orchestrator bash -c 'cd /app && alembic history'
 ```
 
-> ⚠️ `docker compose exec orchestrator alembic upgrade head` exits silently without error but does **not** apply migrations — the working directory is wrong. Always use `docker exec ... bash -c 'cd /app && alembic ...'`.
+> ⚠️ `docker compose exec orchestrator alembic upgrade head` exits silently without applying migrations — wrong working directory. Always use `docker exec ... bash -c 'cd /app && alembic ...'`.
 
 ---
 
@@ -363,9 +323,6 @@ docker exec sentinel-orchestrator bash -c 'cd /app && alembic history'
 ```bash
 # Stop, keep volumes
 docker compose down
-
-# Stop GPU worker separately first if needed
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml down
 
 # ⚠️ DESTRUCTIVE — stop and delete ALL data volumes
 docker compose down -v
@@ -384,7 +341,5 @@ Sentinel uses the `sentinel-net` bridge network. It does not share networks with
 | 5432 | PostgreSQL |
 | 5672 / 15672 | RabbitMQ AMQP / Management |
 | 9000 / 9001 | MinIO API / Console |
-
-If any conflict exists, remap the host port in `.env` (e.g. `POSTGRES_PORT=5433`).
 
 **Do not touch:** `frigate`, `ollama`, `nginx-proxy` containers.
