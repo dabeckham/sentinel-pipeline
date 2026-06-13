@@ -167,7 +167,10 @@ docker compose build md-worker && docker compose up -d md-worker
 - **UI login:** admin / (check credentials_access.md in memory files)
 - **API auth:** POST /api/auth/login → JWT bearer token
 - **GitHub PAT:** see credentials_access.md (expires 2026-12-31)
-- **Discord webhooks:** see credentials_access.md
+- **Discord webhooks:** see credentials_access.md. **Any code posting to a
+  Discord webhook MUST set a non-default `User-Agent` header** — Discord/
+  Cloudflare `403`s the default `Python-urllib/x.y` UA (curl's UA is allowed,
+  so curl tests pass and mask it). See "Known Gotchas" below.
 
 ---
 
@@ -183,6 +186,7 @@ docker compose build md-worker && docker compose up -d md-worker
 8. **TRT engine warmup required** — `YOLO(engine_path, task="detect")` leaves `.names` empty until first `predict()`. Worker runs dummy `predict(np.zeros(...))` immediately after load.
 9. **RabbitMQ mnesia wipe** — `change_password` silently does nothing if user doesn't exist. Use `add_user` + `set_user_tags` + `set_permissions`. See disaster_recovery.md Scenario 8.
 10. **Worker registry is in-memory** — orchestrator restart wipes it. Self-healing: heartbeats carry type+device and bootstrap unknown workers; workers re-announce on 404 from status poll.
+11. **Discord webhook needs a real `User-Agent`** — Discord fronts its API with Cloudflare, which `403 Forbidden`s the default `Python-urllib/x.y` UA. `curl` sends an allowed UA, so curl/shell tests return `204` and hide the bug, while the app silently fails (worse if the post is fire-and-forget under a bare `except`). Always set e.g. `User-Agent: sentinel/1.0 (+...)` in the request headers. Cross-network requirement (discovered in xlnn webui 2026-06-13). Never `except: pass` a webhook post during bring-up — log the status/exception at least once.
 11. **git filter-repo removes the remote** — after purging history, must `git remote add origin` and `git push --set-upstream origin main`
 
 ---
