@@ -23,7 +23,10 @@ class Settings(BaseSettings):
     governor_interval_s: int = 15          # control-loop period
     load_high: float = 0.90                # >= this → park a worker
     load_low: float = 0.65                 # <  this → eligible to add a worker
-    swap_high_pct: float = 25.0            # swap usage above this → park
+    # Swap THRASHING signal — sustained swap-IN rate (MB/s), NOT occupancy.
+    # A full-but-idle swap (e.g. 82% after an earlier spike) is harmless; only
+    # active paging-in indicates memory pressure. (Caught in observe-mode.)
+    swap_in_high_mb_s: float = 5.0         # >= this → emergency park
     action_cooldown_s: int = 45            # min seconds between scale actions
     # Reserve physical cores for the OS + co-tenants (Frigate, Ollama, …).
     # On the i9-9900K host this keeps Sentinel from starving Frigate (the

@@ -37,7 +37,8 @@ class Resources:
     load15: float
     ram_total_mb: int
     ram_available_mb: int
-    swap_used_pct: float
+    swap_used_pct: float        # occupancy — for reporting only, NOT a pressure signal
+    swap_in_bytes: int          # cumulative bytes swapped IN (rate of change = thrashing)
     gpus: list[Gpu] = field(default_factory=list)
 
     @property
@@ -90,5 +91,6 @@ def probe() -> Resources:
         ram_total_mb=vm.total // (1024 * 1024),
         ram_available_mb=vm.available // (1024 * 1024),
         swap_used_pct=sm.percent,
+        swap_in_bytes=sm.sin,
         gpus=_probe_gpus(),
     )

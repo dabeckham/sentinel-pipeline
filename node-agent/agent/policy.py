@@ -42,12 +42,14 @@ def _min(s: Settings, t: str) -> int:
 
 
 def decide(s: Settings, res: Resources, b: Budget,
-           dem: dict[str, int | None], counts: dict[str, int]) -> Decision:
+           dem: dict[str, int | None], counts: dict[str, int],
+           swap_in_rate_mb_s: float) -> Decision:
     load = res.load_per_core
     committed = counts["oc"] * s.oc_cost_cores + counts["md"] * s.md_cost_cores
 
-    # 1. Pressure → park one. Swap distress is an emergency (bypasses cooldown).
-    swap_distress = res.swap_used_pct >= s.swap_high_pct
+    # 1. Pressure → park one. Swap distress (active paging-in, not occupancy) is
+    #    an emergency that bypasses cooldown.
+    swap_distress = swap_in_rate_mb_s >= s.swap_in_high_mb_s
     if swap_distress or load >= s.load_high:
         # Park the type with the least demand first; tie → OC (heaviest relief).
         order = sorted(("oc", "md"), key=lambda t: ((dem.get(t) or 0), 0 if t == "oc" else 1))
@@ -55,7 +57,7 @@ def decide(s: Settings, res: Resources, b: Budget,
             if counts[t] > 0 and (counts[t] > _min(s, t) or swap_distress):
                 why = "swap_distress" if swap_distress else "load_high"
                 return Decision("park", t,
-                                f"{why} load/core={load:.2f} swap={res.swap_used_pct:.0f}%",
+                                f"{why} load/core={load:.2f} swap_in={swap_in_rate_mb_s:.1f}MB/s",
                                 emergency=swap_distress)
         return Decision("hold", None, "pressure_but_at_minimum")
 
