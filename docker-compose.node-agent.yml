@@ -14,7 +14,8 @@ services:
     restart: unless-stopped
     environment:
       AGENT_NODE_NAME: orchestrator-host
-      AGENT_DRY_RUN: "true"                       # observe-only until validated
+      # Observe-only by default; flip live with:  AGENT_DRY_RUN=false docker compose ... up -d
+      AGENT_DRY_RUN: ${AGENT_DRY_RUN:-true}
       AGENT_RESERVE_CORES: "3"                    # leave 3 cores for Frigate/Ollama/OS
       AGENT_RABBITMQ_USER: ${RABBITMQ_USER}
       AGENT_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
