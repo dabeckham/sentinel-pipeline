@@ -27,7 +27,7 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 ## Current Status — ALL 5 PHASES COMPLETE ✅ + v0.6.0
 
 **Orchestrator version: 0.6.0**  
-**Active branch: `main`** (feature/oc-worker-bytetrack-pipeline merged in session 15)  
+**Active branch: `main`** (last commit `9214708` — track-classification autoflush fix, session 16)  
 **Alembic migration head: `0008`**  
 **4 OC workers running:** GPU 1 (workers 1, 3, 4) + GPU 0 (worker 2, shares with Frigate)
 
@@ -188,6 +188,7 @@ docker compose build md-worker && docker compose up -d md-worker
 10. **Worker registry is in-memory** — orchestrator restart wipes it. Self-healing: heartbeats carry type+device and bootstrap unknown workers; workers re-announce on 404 from status poll.
 11. **Discord webhook needs a real `User-Agent`** — Discord fronts its API with Cloudflare, which `403 Forbidden`s the default `Python-urllib/x.y` UA. `curl` sends an allowed UA, so curl/shell tests return `204` and hide the bug, while the app silently fails (worse if the post is fire-and-forget under a bare `except`). Always set e.g. `User-Agent: sentinel/1.0 (+...)` in the request headers. Cross-network requirement (discovered in xlnn webui 2026-06-13). Never `except: pass` a webhook post during bring-up — log the status/exception at least once.
 11. **git filter-repo removes the remote** — after purging history, must `git remote add origin` and `git push --set-upstream origin main`
+12. **`SessionLocal` is `autoflush=False`** — any function that re-queries rows added earlier in the same transaction must `db.flush()` first. This bit track classification hard (session 16): `_classify_tracks` queried `Detection` before the pending rows were flushed, saw nothing, and labeled ~94% of tracks `stationary`. Fixed with a `db.flush()` before `_classify_tracks`.
 
 ---
 
@@ -237,11 +238,13 @@ The UI worker panel shows labels like `MD-CPU-1`, `OC-GPU-2`, status dots (green
 | 2026-06-07 | 13 | snapshot_bbox column (migration 0003). BboxOverlay SVG component in UI. Deployed. SSH permission granted. |
 | 2026-06-07 | 14 | v0.6.0. Track classification (moving/stationary, migration 0004). Tracks page overhaul: infinite scroll, multi-select filters, date range with calendar. Jobs page: resizable columns, filename, track_count, Kill button, stage timeline hover. MetricsBar SSE. Second OC worker on GPU 0. Migration 0005 (stage timestamps). |
 | 2026-06-08–09 | 15 | **TRT FP16 + ByteTrack + job-descriptor architecture.** MD sends one job descriptor per job (not per-frame). OC opens video directly, TRT FP16 ~42fps. Replaced Norfair with ByteTrack (supervision). 4 OC workers (GPU 1: 1,3,4; GPU 0: 2). Single shared Docker image (`sentinel-oc-worker-gpu:latest`) — no more version skew. Renamed `docker-compose.gpu.yml` → `docker-compose.override.yml` (auto-merged, no `-f` needed). Worker lifecycle events (online/offline/heartbeat). Worker panel with labels, status dots, suspend/resume, stats callout. Bulk job pause/kill (migrations 0006, 0007). Pipeline settings table (migration 0008). Self-healing worker registry (heartbeat bootstraps, 404 re-announce). Security: `.env.backup.with.keys` purged from git history, credentials rotated. RabbitMQ mnesia recovery procedure documented. Issues #40–#49 created and closed. |
+| 2026-06-09 | 16 | **Moving/stationary classification fix.** Diagnosed that ~94% of tracks were labeled `stationary` (cars sweeping across the whole frame included). Root cause: `SessionLocal` is `autoflush=False`, so `_classify_tracks` queried `Detection` before the pending rows were flushed and saw an empty set → every track fell into the `stationary` default. Fixed with a one-line `db.flush()` before `_classify_tracks`. `scripts/backfill_classify.py` re-classified all 6,087 completed jobs from committed data (moving 2,420 → 4,578). Deferred follow-up: first-to-last metric still misses loiter-and-return + ID-switch merges (path-span metric is a trade-off). Issue #50 created and closed. Commit `9214708`. |
 
 ---
 
 ## What's Next
 
+- **Track classification metric** (deferred from session 16, issue #50): first-to-last displacement misses loiter-and-return tracks and mislabels ID-switch merges of two parked cars (e.g. track 1248: 4411px path span, 1px first-to-last → stationary). A path-span / cumulative-motion metric would catch these but turns ID-switch merges into false `moving` positives. Trade-off — Don to decide.
 - **Dwell time Phase 2** (issue #23): Similar-bbox search — `GET /tracks/{id}/similar?iou_threshold=0.7`
 - **Dwell time Phase 3**: Dwell zones table, admin UI to draw zones, auto-tag at job close-out
 - **Phase 7:** RTSP live stream worker pool
