@@ -315,43 +315,41 @@ function TrackDrawer({ trackId, onClose }) {
   const [videoLoading, setVideoLoading] = useState(false)
   const [videoErr, setVideoErr]       = useState(false)
   const [videoPrep, setVideoPrep]     = useState('')   // status while transcoding
-  const [downloading, setDownloading] = useState(false)
-  const [downloadErr, setDownloadErr] = useState('')
   const [videoErrMsg, setVideoErrMsg] = useState('')
-  const videoUrlRef = useRef(null)
   const prepCancelRef = useRef(false)
   const retriedRef = useRef(false)   // one automatic lower-rung retry on decode error
 
+  const authToken = () => localStorage.getItem('sentinel_token') || ''
+
   // Adaptive playback. The source is 11MP HEVC (browsers can't decode it), so we
   // profile this browser once (max decodable H.264 height + bandwidth) and ask
-  // the backend for a rendition at that height. The first request kicks off a
-  // GPU transcode and returns 202; we poll until the H.264 rendition is ready,
-  // then play it from a blob. Cached per open. Download uses the original clip.
-  const ensurePlayback = useCallback(async (forceH = null) => {
-    if (!forceH && videoUrlRef.current) return videoUrlRef.current
+  // the backend for a rendition at that height. We POLL a cheap readiness probe
+  // (small JSON) while the GPU transcodes, then point the native <video> at the
+  // streaming URL — the browser fetches it in retryable range chunks, which is
+  // robust over a lossy LAN link (a single big blob fetch was not). The native
+  // element can't send an auth header, so the JWT rides as a ?token= param.
+  const preparePlayback = useCallback(async (forceH = null) => {
     if (!detail?.job_id) return null
-    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
     setVideoLoading(true); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
     prepCancelRef.current = false
     try {
-      const token = localStorage.getItem('sentinel_token')
+      const token = authToken()
       const auth = token ? { Authorization: `Bearer ${token}` } : {}
       const h = forceH ?? (await getPlaybackProfile()).targetHeight
-      const url = `/api/jobs/${detail.job_id}/playback?h=${h}`
-      // 202 → still transcoding; poll (~1.5s) up to ~60s before giving up.
+      // Poll readiness (probe=1 → tiny response) up to ~60s while transcoding.
       for (let i = 0; i < 40; i++) {
         if (prepCancelRef.current) return null
-        const res = await fetch(url, { headers: auth })
+        const res = await fetch(`/api/jobs/${detail.job_id}/playback?h=${h}&probe=1`, { headers: auth })
         if (res.status === 202) {
           setVideoPrep('Preparing playback…')
           await new Promise(r => setTimeout(r, 1500))
           continue
         }
         if (!res.ok) throw new Error(res.status)
-        const blobUrl = URL.createObjectURL(await res.blob())
-        videoUrlRef.current = blobUrl
-        setVideoUrl(blobUrl); setVideoPrep('')
-        return blobUrl
+        // Ready → native streaming URL (range-capable), token in query for the <video>.
+        const streamUrl = `/api/jobs/${detail.job_id}/playback?h=${h}&token=${encodeURIComponent(token)}`
+        setVideoUrl(streamUrl); setVideoPrep('')
+        return streamUrl
       }
       throw new Error('transcode timeout')
     } catch (e) {
@@ -364,54 +362,40 @@ function TrackDrawer({ trackId, onClose }) {
 
   const playVideo = async () => {
     setPlaying(false); retriedRef.current = false
-    const u = await ensurePlayback(); if (u) setVideoMode(true)
+    const u = await preparePlayback(); if (u) setVideoMode(true)
   }
 
   // The rendition is valid H.264, but if THIS browser still can't decode the
-  // chosen rung, drop one rung and retry once before declaring failure.
+  // chosen rung, drop to 720p and retry once before declaring failure.
   const onVideoError = e => {
     const code = e?.target?.error?.code
     if (!retriedRef.current) {
       retriedRef.current = true
       setVideoMode(false)
-      ensurePlayback(720).then(u => { if (u) setVideoMode(true) })
+      preparePlayback(720).then(u => { if (u) setVideoMode(true) })
       return
     }
     setVideoErr(true); setVideoErrMsg(`decode error (code ${code ?? '?'})`); setVideoMode(false)
   }
 
-  // Download the ORIGINAL full-resolution clip (not the downscaled rendition).
-  // Has its OWN error state — a download hiccup must not surface as a playback
-  // "unavailable" message (they're independent actions).
-  const downloadVideo = async () => {
-    if (!detail?.job_id || downloading) return
-    setDownloading(true); setDownloadErr('')
-    try {
-      const token = localStorage.getItem('sentinel_token')
-      const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      if (!res.ok) throw new Error(`http ${res.status}`)
-      const u = URL.createObjectURL(await res.blob())
-      const a = document.createElement('a')
-      a.href = u; a.download = `job_${detail.job_id}.mp4`
-      document.body.appendChild(a); a.click(); a.remove()
-      setTimeout(() => URL.revokeObjectURL(u), 30000)
-    } catch (e) {
-      setDownloadErr(e?.message || 'failed')
-    } finally {
-      setDownloading(false)
-    }
+  // Download the ORIGINAL full-resolution clip via a NATIVE link — the browser's
+  // download manager streams it with range/resume, so it can't be cut off by a
+  // dropped fetch (the previous fetch-to-blob approach). Token rides as a query
+  // param since a plain <a> can't set an auth header.
+  const downloadVideo = () => {
+    if (!detail?.job_id) return
+    const url = `/api/jobs/${detail.job_id}/video?token=${encodeURIComponent(authToken())}`
+    const a = document.createElement('a')
+    a.href = url; a.download = `job_${detail.job_id}.mp4`
+    document.body.appendChild(a); a.click(); a.remove()
   }
 
-  // Reset/cleanup video when the track changes or modal unmounts
+  // Reset video state when the track changes or the modal unmounts.
   useEffect(() => {
-    prepCancelRef.current = true   // stop any in-flight transcode poll
-    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
+    prepCancelRef.current = true   // stop any in-flight readiness poll
     setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
-    setDownloading(false); setDownloadErr(''); retriedRef.current = false
+    retriedRef.current = false
   }, [trackId])
-  useEffect(() => () => { if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current) }, [])
 
   useEffect(() => {
     if (!autoZoom) return
@@ -480,11 +464,10 @@ function TrackDrawer({ trackId, onClose }) {
                   className="accent-brand w-3 h-3" />
                 Bbox
               </label>
-              <button onClick={downloadVideo} disabled={downloading} title="Download the original full-resolution clip"
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition-colors disabled:opacity-50">
-                {downloading ? 'Downloading…' : '⬇ Download'}
+              <button onClick={downloadVideo} title="Download the original full-resolution clip"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition-colors">
+                ⬇ Download
               </button>
-              {downloadErr && <span className="text-xs text-red-400">download failed ({downloadErr})</span>}
               <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors text-xl leading-none">✕</button>
             </div>
           </div>

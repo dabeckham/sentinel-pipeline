@@ -17,8 +17,8 @@ original via /jobs/{id}/video.
 """
 import threading
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
 
 from app.auth.deps import require_viewer
@@ -68,13 +68,43 @@ def _ensure_queue_declared() -> None:
     _queue_declared = True
 
 
+def _enqueue_transcode(job, rung, object_name, s) -> None:
+    key = (job.id, rung)
+    with _inflight_lock:
+        already = key in _inflight
+        _inflight.add(key)
+    if already:
+        return
+    try:
+        _ensure_queue_declared()
+        from app.services import amqp
+        amqp.publish(s.queue_transcode, {
+            "job_id": job.id,
+            "source_path": job.file_path,
+            "object_name": object_name,
+            "height": rung,
+            "bitrate_k": LADDER[rung],
+        })
+    except Exception:
+        with _inflight_lock:
+            _inflight.discard(key)
+        raise HTTPException(status_code=503, detail="Could not enqueue transcode")
+
+
 @router.get("/{job_id}/playback")
 def get_playback(
+    request: Request,
     job_id: int,
     h: int = Query(720, ge=144, le=4320, description="target rendition height"),
+    probe: int = Query(0, description="1 = readiness check only (no media body)"),
     _: User = Depends(require_viewer),
     db: Session = Depends(get_db),
 ):
+    """Serve a browser-friendly H.264 rendition with HTTP range support so the
+    native <video> element streams it in retryable chunks (robust over a lossy
+    LAN link). `probe=1` returns readiness only (202 transcoding / 200 ready)
+    without the body, so the UI can poll cheaply, then point <video> at this URL.
+    Native elements authenticate with the JWT as a ?token= query param."""
     job = db.query(Job).filter_by(id=job_id).first()
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -91,45 +121,48 @@ def get_playback(
     s = get_settings()
     mc = get_minio()
 
-    # Cache hit → stream the rendition.
+    # Is the rendition ready? (stat is cheap — no body read)
     try:
-        resp = mc.get_object(s.minio_bucket_snapshots, object_name)
-        data = resp.read()
-        resp.close()
-        resp.release_conn()
-        with _inflight_lock:
-            _inflight.discard((job_id, rung))   # done — allow re-enqueue if ever purged
-        return StreamingResponse(
-            iter([data]),
-            media_type="video/mp4",
-            headers={
-                "Cache-Control": "public, max-age=86400",
-                "Content-Length": str(len(data)),
-                "X-Rendition-Rung": str(rung),
-            },
-        )
+        stat = mc.stat_object(s.minio_bucket_snapshots, object_name)
+        size = stat.size
     except Exception:
-        pass  # not cached yet — fall through to enqueue
+        size = None
 
-    # Cache miss → enqueue a transcode (deduped) and tell the client to poll.
-    key = (job_id, rung)
+    if size is None:
+        _enqueue_transcode(job, rung, object_name, s)        # transcoding — tell client to poll
+        return JSONResponse(status_code=202, content={"status": "transcoding", "rung": rung})
+
     with _inflight_lock:
-        already = key in _inflight
-        _inflight.add(key)
-    if not already:
-        try:
-            _ensure_queue_declared()
-            from app.services import amqp
-            amqp.publish(s.queue_transcode, {
-                "job_id": job_id,
-                "source_path": job.file_path,
-                "object_name": object_name,
-                "height": rung,
-                "bitrate_k": LADDER[rung],
-            })
-        except Exception:
-            with _inflight_lock:
-                _inflight.discard(key)
-            raise HTTPException(status_code=503, detail="Could not enqueue transcode")
+        _inflight.discard((job_id, rung))                    # ready — allow re-enqueue if ever purged
 
-    return JSONResponse(status_code=202, content={"status": "transcoding", "rung": rung})
+    if probe:
+        return JSONResponse(status_code=200, content={"status": "ready", "rung": rung, "size": size})
+
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=86400",
+        "X-Rendition-Rung": str(rung),
+    }
+
+    # Range request → 206 Partial Content (the browser fetches/seeks in chunks).
+    range_header = request.headers.get("range")
+    if range_header and range_header.startswith("bytes="):
+        try:
+            first, _, last = range_header[len("bytes="):].partition("-")
+            start = int(first) if first else 0
+            end = int(last) if last else size - 1
+        except ValueError:
+            raise HTTPException(status_code=416, detail="Invalid range")
+        end = min(end, size - 1)
+        if start > end or start >= size:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        length = end - start + 1
+        obj = mc.get_object(s.minio_bucket_snapshots, object_name, offset=start, length=length)
+        data = obj.read(); obj.close(); obj.release_conn()
+        return Response(content=data, status_code=206, media_type="video/mp4",
+                        headers={**base_headers, "Content-Range": f"bytes {start}-{end}/{size}"})
+
+    # No range → whole object (still advertises Accept-Ranges so the browser may range next time).
+    obj = mc.get_object(s.minio_bucket_snapshots, object_name)
+    data = obj.read(); obj.close(); obj.release_conn()
+    return Response(content=data, status_code=200, media_type="video/mp4", headers=base_headers)
