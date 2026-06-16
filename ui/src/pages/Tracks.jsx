@@ -316,25 +316,28 @@ function TrackDrawer({ trackId, onClose }) {
   const [videoErr, setVideoErr]       = useState(false)
   const [videoPrep, setVideoPrep]     = useState('')   // status while transcoding
   const [downloading, setDownloading] = useState(false)
-  const [downloadErr, setDownloadErr] = useState(false)
+  const [downloadErr, setDownloadErr] = useState('')
+  const [videoErrMsg, setVideoErrMsg] = useState('')
   const videoUrlRef = useRef(null)
   const prepCancelRef = useRef(false)
+  const retriedRef = useRef(false)   // one automatic lower-rung retry on decode error
 
   // Adaptive playback. The source is 11MP HEVC (browsers can't decode it), so we
   // profile this browser once (max decodable H.264 height + bandwidth) and ask
   // the backend for a rendition at that height. The first request kicks off a
   // GPU transcode and returns 202; we poll until the H.264 rendition is ready,
   // then play it from a blob. Cached per open. Download uses the original clip.
-  const ensurePlayback = useCallback(async () => {
-    if (videoUrlRef.current) return videoUrlRef.current
+  const ensurePlayback = useCallback(async (forceH = null) => {
+    if (!forceH && videoUrlRef.current) return videoUrlRef.current
     if (!detail?.job_id) return null
-    setVideoLoading(true); setVideoErr(false); setVideoPrep('')
+    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
+    setVideoLoading(true); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
     prepCancelRef.current = false
     try {
       const token = localStorage.getItem('sentinel_token')
       const auth = token ? { Authorization: `Bearer ${token}` } : {}
-      const { targetHeight } = await getPlaybackProfile()
-      const url = `/api/jobs/${detail.job_id}/playback?h=${targetHeight}`
+      const h = forceH ?? (await getPlaybackProfile()).targetHeight
+      const url = `/api/jobs/${detail.job_id}/playback?h=${h}`
       // 202 → still transcoding; poll (~1.5s) up to ~60s before giving up.
       for (let i = 0; i < 40; i++) {
         if (prepCancelRef.current) return null
@@ -351,35 +354,51 @@ function TrackDrawer({ trackId, onClose }) {
         return blobUrl
       }
       throw new Error('transcode timeout')
-    } catch {
-      setVideoErr(true); setVideoPrep('')
+    } catch (e) {
+      setVideoErr(true); setVideoErrMsg(`load error (${e?.message ?? '?'})`); setVideoPrep('')
       return null
     } finally {
       setVideoLoading(false)
     }
   }, [detail])
 
-  const playVideo = async () => { setPlaying(false); const u = await ensurePlayback(); if (u) setVideoMode(true) }
+  const playVideo = async () => {
+    setPlaying(false); retriedRef.current = false
+    const u = await ensurePlayback(); if (u) setVideoMode(true)
+  }
+
+  // The rendition is valid H.264, but if THIS browser still can't decode the
+  // chosen rung, drop one rung and retry once before declaring failure.
+  const onVideoError = e => {
+    const code = e?.target?.error?.code
+    if (!retriedRef.current) {
+      retriedRef.current = true
+      setVideoMode(false)
+      ensurePlayback(720).then(u => { if (u) setVideoMode(true) })
+      return
+    }
+    setVideoErr(true); setVideoErrMsg(`decode error (code ${code ?? '?'})`); setVideoMode(false)
+  }
 
   // Download the ORIGINAL full-resolution clip (not the downscaled rendition).
   // Has its OWN error state — a download hiccup must not surface as a playback
   // "unavailable" message (they're independent actions).
   const downloadVideo = async () => {
     if (!detail?.job_id || downloading) return
-    setDownloading(true); setDownloadErr(false)
+    setDownloading(true); setDownloadErr('')
     try {
       const token = localStorage.getItem('sentinel_token')
       const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      if (!res.ok) throw new Error(res.status)
+      if (!res.ok) throw new Error(`http ${res.status}`)
       const u = URL.createObjectURL(await res.blob())
       const a = document.createElement('a')
       a.href = u; a.download = `job_${detail.job_id}.mp4`
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(u), 30000)
-    } catch {
-      setDownloadErr(true)
+    } catch (e) {
+      setDownloadErr(e?.message || 'failed')
     } finally {
       setDownloading(false)
     }
@@ -389,8 +408,8 @@ function TrackDrawer({ trackId, onClose }) {
   useEffect(() => {
     prepCancelRef.current = true   // stop any in-flight transcode poll
     if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
-    setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoPrep('')
-    setDownloading(false); setDownloadErr(false)
+    setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
+    setDownloading(false); setDownloadErr(''); retriedRef.current = false
   }, [trackId])
   useEffect(() => () => { if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current) }, [])
 
@@ -465,7 +484,7 @@ function TrackDrawer({ trackId, onClose }) {
                 className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition-colors disabled:opacity-50">
                 {downloading ? 'Downloading…' : '⬇ Download'}
               </button>
-              {downloadErr && <span className="text-xs text-red-400">download failed</span>}
+              {downloadErr && <span className="text-xs text-red-400">download failed ({downloadErr})</span>}
               <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors text-xl leading-none">✕</button>
             </div>
           </div>
@@ -485,8 +504,8 @@ function TrackDrawer({ trackId, onClose }) {
                   onDoubleClick={handleDoubleClick}
                 >
                   {videoMode && videoUrl && (
-                    <video src={videoUrl} controls autoPlay
-                      onError={() => { setVideoErr(true); setVideoMode(false) }}
+                    <video src={videoUrl} controls autoPlay muted playsInline
+                      onError={onVideoError}
                       className="absolute inset-0 w-full h-full object-contain bg-black z-10" />
                   )}
                   <div style={{
@@ -538,7 +557,7 @@ function TrackDrawer({ trackId, onClose }) {
                       onChange={e => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
                       className="flex-1 accent-brand" title="scrub detections (moves the bbox on the still)" />
                   )}
-                  {videoErr && <span className="text-xs text-red-400">playback failed — try Download</span>}
+                  {videoErr && <span className="text-xs text-red-400">playback failed{videoErrMsg ? ` — ${videoErrMsg}` : ''} — try Download</span>}
                 </div>
 
                 <div className="p-4 space-y-4">
