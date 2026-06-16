@@ -24,4 +24,9 @@ RUN pip install --no-cache-dir -r requirements.gpu.txt
 ARG CACHEBUST=1
 COPY . .
 
+# Code version (git short SHA) baked at build for version reporting.
+# Pass --build-arg GIT_SHA=$(git rev-parse --short HEAD); defaults to "dev".
+ARG GIT_SHA=dev
+ENV WORKER_CODE_VERSION=$GIT_SHA
+
 CMD ["python", "-m", "worker.main"]

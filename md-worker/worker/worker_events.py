@@ -76,15 +76,25 @@ class WorkerEventPublisher:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def _identity(self) -> dict:
+        """Identity + version fields on every lifecycle event so the orchestrator
+        can place the worker in the broker/agent/worker hierarchy and judge
+        protocol compatibility."""
+        return {
+            "worker_id":        self._worker_id,
+            "worker_type":      self._worker_type,
+            "device":           self._device,
+            "agent_id":         self._settings.agent_id,
+            "protocol_version": self._settings.protocol_version,
+            "code_version":     self._settings.worker_code_version,
+        }
+
     def online(self):
         """Call once immediately after connecting to RabbitMQ."""
-        self._publish({
-            "worker_event": "online",
-            "worker_id":    self._worker_id,
-            "worker_type":  self._worker_type,
-            "device":       self._device,
-        })
-        log.info("worker_event_online", worker_id=self._worker_id, device=self._device)
+        self._publish({"worker_event": "online", **self._identity()})
+        log.info("worker_event_online", worker_id=self._worker_id,
+                 device=self._device, agent_id=self._settings.agent_id,
+                 code_version=self._settings.worker_code_version)
         self._start_heartbeat()
 
     def offline(self):
@@ -98,12 +108,7 @@ class WorkerEventPublisher:
 
     def heartbeat(self):
         """Publish a heartbeat manually (e.g. mid-job to reset the timeout)."""
-        self._publish({
-            "worker_event": "heartbeat",
-            "worker_id":    self._worker_id,
-            "worker_type":  self._worker_type,
-            "device":       self._device,
-        })
+        self._publish({"worker_event": "heartbeat", **self._identity()})
 
     # ── Suspension polling ────────────────────────────────────────────────────
 
@@ -124,12 +129,7 @@ class WorkerEventPublisher:
         except _err.HTTPError as e:
             if e.code == 404:
                 # Orchestrator restarted — re-announce ourselves
-                self._publish({
-                    "worker_event": "online",
-                    "worker_id":    self._worker_id,
-                    "worker_type":  self._worker_type,
-                    "device":       self._device,
-                })
+                self._publish({"worker_event": "online", **self._identity()})
                 log.info("worker_event_reannounce", worker_id=self._worker_id)
         except Exception:
             pass  # orchestrator unreachable — keep current state

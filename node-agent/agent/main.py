@@ -40,7 +40,8 @@ def main():
     signal.signal(signal.SIGTERM, _bye)
     signal.signal(signal.SIGINT, _bye)
 
-    log.info("node_agent_starting", node=s.node_name, dry_run=s.dry_run)
+    from agent.identity import get_agent_id
+    log.info("node_agent_starting", node=s.node_name, agent_id=get_agent_id(), dry_run=s.dry_run)
     Governor(s).run()
 
 

@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     minio_use_ssl: bool = False
     # minio_bucket_crops removed — crops now travel in-memory via RabbitMQ (issue #13)
 
+    # ── Identity & versioning (reported in lifecycle events) ────────────────
+    # See oc-worker/worker/config.py for the full rationale. protocol_version
+    # gates compatibility on MAJOR; code_version (git SHA) is observability only;
+    # agent_id is the node-agent that spawned this worker.
+    protocol_version: str = "1.0"
+    worker_code_version: str = "dev"
+    agent_id: str = "unmanaged"
+
     # Frigate-style motion detection parameters
     motion_frame_height: int = 100      # detection frame height (maintains aspect ratio)
     motion_threshold: int = 25          # delta threshold (1-255); lower = more sensitive

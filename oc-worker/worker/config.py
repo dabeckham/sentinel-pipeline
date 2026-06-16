@@ -19,6 +19,19 @@ class Settings(BaseSettings):
     # minio_bucket_crops removed — crops now travel in-memory via RabbitMQ (issue #13)
     minio_bucket_snapshots: str = "snapshots"
 
+    # ── Identity & versioning (reported in lifecycle events) ────────────────
+    # protocol_version: the worker<->orchestrator contract (message schemas,
+    #   queue names, API). Compatibility is gated on MAJOR; bump only on a
+    #   breaking schema change. A compatible-MAJOR worker is accepted even on an
+    #   older MINOR, so new code can canary on prod without a fleet lockstep.
+    protocol_version: str = "1.0"
+    # code_version: git short SHA baked into the image at build (WORKER_CODE_VERSION).
+    #   Observability only — never gates. "dev" when built without the build-arg.
+    worker_code_version: str = "dev"
+    # agent_id: the node-agent (machine) that spawned this worker. "unmanaged"
+    #   if started outside an agent (e.g. plain docker compose).
+    agent_id: str = "unmanaged"
+
     # OC_MODEL_NAME avoids collision with YOLO_MODEL in .env (which may name a future model)
     oc_model_name: str = "yolo11s"
     oc_confidence_threshold: float = 0.5   # lowered from 0.85 — 0.85 missed too many detections causing track gaps

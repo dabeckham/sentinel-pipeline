@@ -200,13 +200,20 @@ def _handle_message(body: bytes):
         event     = msg["worker_event"]
         worker_id = msg.get("worker_id", "unknown")
         if event == "online":
-            worker_registry.on_online(worker_id, msg.get("worker_type"), msg.get("device"))
-            log.info("worker_online", worker_id=worker_id)
+            worker_registry.on_online(worker_id, msg.get("worker_type"), msg.get("device"),
+                                      agent_id=msg.get("agent_id"),
+                                      protocol_version=msg.get("protocol_version"),
+                                      code_version=msg.get("code_version"))
+            log.info("worker_online", worker_id=worker_id,
+                     agent_id=msg.get("agent_id"), code_version=msg.get("code_version"))
         elif event == "offline":
             worker_registry.on_offline(worker_id)
             log.info("worker_offline", worker_id=worker_id)
         elif event == "heartbeat":
-            worker_registry.on_heartbeat(worker_id, msg.get("worker_type"), msg.get("device"))
+            worker_registry.on_heartbeat(worker_id, msg.get("worker_type"), msg.get("device"),
+                                         agent_id=msg.get("agent_id"),
+                                         protocol_version=msg.get("protocol_version"),
+                                         code_version=msg.get("code_version"))
         return
 
     job_id = msg.get("job_id")

@@ -25,6 +25,7 @@ services:
       AGENT_INGEST_SOURCE: ${INGEST_SOURCE_PATH:-/mnt/ds-one/sentinel-ingest}
       AGENT_OC_GPU_IDS: "1"
     volumes:
+      - node-agent-state:/state                            # persists the self-generated agent_id
       - /var/run/docker.sock:/var/run/docker.sock          # manage worker containers
       - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro          # GPU probe (same as orchestrator)
       - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
@@ -34,6 +35,9 @@ services:
       - /dev/nvidia1:/dev/nvidia1
     networks:
       - sentinel-net
+
+volumes:
+  node-agent-state:
 
 networks:
   sentinel-net:

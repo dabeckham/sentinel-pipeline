@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # ── Identity ────────────────────────────────────────────────────────────
     node_name: str = "local"               # human label for this machine
+    agent_state_dir: str = "/state"        # persists the self-generated agent_id
 
     # ── Governor cadence + watermarks ───────────────────────────────────────
     # Load is normalized per physical core: load1 / physical_cores.

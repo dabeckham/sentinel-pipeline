@@ -56,7 +56,9 @@ def _next_index(wtype: str, wdevice: str, exclude_id: str) -> int:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def on_online(worker_id: str, worker_type: str | None = None, device: str | None = None):
+def on_online(worker_id: str, worker_type: str | None = None, device: str | None = None,
+              agent_id: str | None = None, protocol_version: str | None = None,
+              code_version: str | None = None):
     """Worker came online and is ready."""
     with _lock:
         existing = _workers.get(worker_id, {})
@@ -78,6 +80,10 @@ def on_online(worker_id: str, worker_type: str | None = None, device: str | None
             "idle_since":      _now(),
             "last_heartbeat":  _now(),
             "index":           index,
+            # Identity & versioning (broker/agent/worker hierarchy + compatibility)
+            "agent_id":         agent_id or existing.get("agent_id", "unmanaged"),
+            "protocol_version": protocol_version or existing.get("protocol_version", "?"),
+            "code_version":     code_version or existing.get("code_version", "?"),
             # Cumulative stats — preserved across container restarts
             "jobs_processed":  existing.get("jobs_processed", 0),
             "total_compute_s": existing.get("total_compute_s", 0.0),
@@ -98,7 +104,9 @@ def on_offline(worker_id: str):
             _workers[worker_id]["idle_since"] = None
 
 
-def on_heartbeat(worker_id: str, worker_type: str | None = None, device: str | None = None):
+def on_heartbeat(worker_id: str, worker_type: str | None = None, device: str | None = None,
+                 agent_id: str | None = None, protocol_version: str | None = None,
+                 code_version: str | None = None):
     """Worker sent a keepalive.
     If the worker is unknown (orchestrator restarted), re-register it from
     the heartbeat payload so the panel recovers without restarting workers.
@@ -121,6 +129,9 @@ def on_heartbeat(worker_id: str, worker_type: str | None = None, device: str | N
                                        (device or "?").lower(),
                                        worker_id,
                                    ),
+                "agent_id":         agent_id or "unmanaged",
+                "protocol_version": protocol_version or "?",
+                "code_version":     code_version or "?",
                 "jobs_processed":  0,
                 "total_compute_s": 0.0,
                 "total_frames":    0,
@@ -130,11 +141,17 @@ def on_heartbeat(worker_id: str, worker_type: str | None = None, device: str | N
                 "fps_count":       0,
             }
             return
-        _workers[worker_id]["last_heartbeat"] = _now()
+        w = _workers[worker_id]
+        w["last_heartbeat"] = _now()
+        # Refresh identity/version each heartbeat (worker may have been recycled
+        # onto a new image with a new code_version).
+        if agent_id:          w["agent_id"]         = agent_id
+        if protocol_version:  w["protocol_version"] = protocol_version
+        if code_version:      w["code_version"]     = code_version
         # If liveness monitor had marked it offline, restore to idle
-        if _workers[worker_id]["status"] == "offline":
-            _workers[worker_id]["status"]     = "idle"
-            _workers[worker_id]["idle_since"] = _now()
+        if w["status"] == "offline":
+            w["status"]     = "idle"
+            w["idle_since"] = _now()
 
 
 def update(worker_id: str, status: str, job_id=None):

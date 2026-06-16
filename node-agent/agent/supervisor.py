@@ -18,6 +18,7 @@ import structlog
 from docker.types import DeviceRequest
 
 from agent.config import Settings
+from agent.identity import get_agent_id
 
 log = structlog.get_logger()
 
@@ -30,6 +31,7 @@ class Supervisor:
         self._s = s
         self._client = docker.from_env()
         self._gpu_rr = 0  # round-robin index into oc_gpu_id_list
+        self._agent_id = get_agent_id()   # stable, persisted per machine
 
     # ── Discovery ───────────────────────────────────────────────────────────
     # A worker counts as "present" while running, just-created, or restarting —
@@ -106,6 +108,7 @@ class Supervisor:
             "RABBITMQ_HOST": "rabbitmq", "MINIO_ENDPOINT": "minio:9000",
             "WORKER_TYPE": "oc", "OC_USE_GPU": "true",
             "CUDA_VISIBLE_DEVICES": "0", "OC_MODEL_NAME": "yolo11s",
+            "AGENT_ID": self._agent_id,
         }
         spec["volumes"].update({
             self._s.yolo_volume: {"bind": "/app/models", "mode": "rw"},
@@ -121,6 +124,7 @@ class Supervisor:
         spec["environment"] = {
             "RABBITMQ_HOST": "rabbitmq", "MINIO_ENDPOINT": "minio:9000",
             "WORKER_TYPE": "md", "MD_DEBUG_VIDEO": "false",
+            "AGENT_ID": self._agent_id,
         }
         spec["volumes"][self._s.ingest_source] = {"bind": "/ingest", "mode": "rw"}
         c = self._client.containers.run(self._s.md_image, **spec)
