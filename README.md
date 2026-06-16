@@ -210,6 +210,7 @@ docker compose up -d oc-worker oc-worker-2 oc-worker-3 oc-worker-4
 | 0006 | md_worker_id, oc_worker_id columns on jobs |
 | 0007 | `paused` value added to jobstatus enum |
 | 0008 | pipeline_settings key-value table |
+| 0009 | `jobs.file_hash` UNIQUE — race-safe ingest dedup |
 
 Migrations run automatically on orchestrator startup.
 

@@ -215,10 +215,12 @@ docker compose up -d oc-worker oc-worker-2 oc-worker-3 oc-worker-4
 
 ## Startup Recovery (automatic)
 
-On every orchestrator startup, two recovery routines run automatically before the file watcher starts:
+On every orchestrator startup, two recovery routines run automatically:
 
-1. **`recover_stuck_jobs()`** — finds jobs in `queued`, `md_processing`, or `oc_processing` state, resets to `queued`, re-publishes to ingest queue.
-2. **`scan_ingest_missed()`** — walks `/ingest`, SHA-256 hashes each video file, creates a job for any file with no DB record. Safe to run repeatedly.
+1. **`recover_stuck_jobs()`** — finds jobs in `queued`, `md_processing`, or `oc_processing` state, resets to `queued`, re-publishes to ingest queue. Runs **synchronously** before the API serves (DB-only, fast).
+2. **`scan_ingest_missed()`** — walks `/ingest`, SHA-256 hashes each video file, creates a job for any file with no DB record. Runs in a **background daemon thread** (session 16) so it never blocks the API — hashing a full day of clips over NFS takes minutes. The file watcher starts first, so new arrivals are handled live while the scan backfills pre-existing files. Dedup is race-safe via the `jobs.file_hash` UNIQUE constraint (migration 0009). Safe to run repeatedly.
+
+> If the pipeline is already backed up at startup, `startup_health_check()` pauses the watcher and the scan is deferred until the health monitor calls `resume_watcher()` once the backlog clears.
 
 ---
 
@@ -294,7 +296,7 @@ nvidia-smi             # snapshot
 
 Migrations run automatically on orchestrator startup via Alembic.
 
-**Current migration head: `0008`**
+**Current migration head: `0009`**
 
 | Revision | Description |
 |---|---|
@@ -306,6 +308,7 @@ Migrations run automatically on orchestrator startup via Alembic.
 | 0006 | md_worker_id, oc_worker_id columns on jobs |
 | 0007 | `paused` value added to jobstatus enum |
 | 0008 | pipeline_settings key-value table |
+| 0009 | `jobs.file_hash` UNIQUE — race-safe ingest dedup |
 
 To run or inspect manually:
 ```bash
