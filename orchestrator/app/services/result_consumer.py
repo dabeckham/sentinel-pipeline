@@ -109,6 +109,28 @@ def _classify_tracks(db, job_id: int) -> None:
              threshold=threshold)
 
 
+def _mark_source_processed(job) -> None:
+    """Rename the source clip to processed_<name> on the ingest mount and update
+    job.file_path to match. Idempotent and best-effort: a missing file or a
+    permission/IO error is logged, not raised (the job still completes)."""
+    import os
+    old = job.file_path
+    if not old:
+        return
+    base = os.path.basename(old)
+    if base.startswith("processed_"):
+        return
+    new = os.path.join(os.path.dirname(old), "processed_" + base)
+    try:
+        os.rename(old, new)
+        job.file_path = new
+        log.info("source_marked_processed", job_id=job.id, new_path=new)
+    except FileNotFoundError:
+        log.warning("source_missing_on_mark", job_id=job.id, path=old)
+    except OSError as exc:
+        log.warning("source_mark_failed", job_id=job.id, error=str(exc))
+
+
 def _get_or_create_track(db, job_id: int, track_id: int) -> Track:
     track = db.query(Track).filter_by(job_id=job_id, track_id=track_id).first()
     if track is None:
@@ -304,6 +326,10 @@ def _handle_message(body: bytes):
             # reads the full, persisted path of each track.
             db.flush()
             _classify_tracks(db, job_id)
+            # Flag the source clip as processed: rename to processed_<name> on the
+            # NAS and repoint file_path. Lifecycle marker (toward later purge) and
+            # lets the recovery scan skip it without re-hashing. Only on success.
+            _mark_source_processed(job)
             log.info("job_completed", job_id=job_id, detections=len(detections))
             # OC worker is now idle; record performance stats
             oc_worker_id = msg.get("worker_id")

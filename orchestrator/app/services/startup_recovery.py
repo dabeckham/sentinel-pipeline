@@ -108,6 +108,7 @@ def scan_ingest_missed() -> int:
         p for p in ingest_path.glob(glob)
         if p.is_file()
         and p.suffix.lower() in VIDEO_EXTENSIONS
+        and not p.name.startswith("processed_")   # already handled — skip, no re-hash
         and not any(part.lower() in ignore_dirs for part in p.parts)
     ]
 

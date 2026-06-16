@@ -120,7 +120,9 @@ services:
       # on-disk backlog:  INGEST_WATCH_ENABLED=false docker compose up -d orchestrator
       INGEST_WATCH_ENABLED: ${INGEST_WATCH_ENABLED:-true}
     volumes:
-      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:ro
+      # rw: the orchestrator renames a clip to processed_<name> on completion
+      # (lifecycle flag + lets the scan skip it without re-hashing)
+      - ${INGEST_SOURCE_PATH:-/mnt/ftp-incoming}:/ingest:rw
       # nvidia-smi for metrics endpoint — read-only binary + library + device access
       - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
       - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro

@@ -52,7 +52,10 @@ class IngestHandler(FileSystemEventHandler):
         self._process(event.dest_path)
 
     def _is_ignored(self, path: str) -> bool:
-        """Return True if any path component matches an ignore dir."""
+        """Return True if the file should be skipped — an ignore dir, or a
+        clip we already renamed to processed_ (the rename fires on_moved)."""
+        if Path(path).name.startswith("processed_"):
+            return True
         settings = get_settings()
         ignore = {d.strip().lower() for d in settings.ingest_ignore_dirs.split(",") if d.strip()}
         return any(part.lower() in ignore for part in Path(path).parts)
