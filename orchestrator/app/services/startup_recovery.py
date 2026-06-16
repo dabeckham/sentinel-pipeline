@@ -7,6 +7,7 @@ Startup recovery routines — run once during orchestrator lifespan startup.
 import hashlib
 import structlog
 from pathlib import Path
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -131,7 +132,6 @@ def scan_ingest_missed() -> int:
                            path=str(p), job_id=existing.id, status=existing.status.value)
                 continue
 
-            log.info("startup_scan_new_file", path=str(p))
             job = Job(
                 file_path=str(p),
                 file_hash=file_hash,
@@ -139,8 +139,19 @@ def scan_ingest_missed() -> int:
                 status=JobStatus.queued,
             )
             db.add(job)
-            db.flush()
+            # Commit per file BEFORE publishing: this keeps a dedup race with the
+            # live watcher contained to a single file (IntegrityError → skip) and
+            # ensures we never publish a queue message for a job whose row didn't
+            # persist (no orphaned job_ids if a later file fails).
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                log.info("startup_scan_duplicate_race_skipped", path=str(p))
+                continue
+            db.refresh(job)
 
+            log.info("startup_scan_new_file", path=str(p), job_id=job.id)
             amqp.publish(
                 settings.queue_ingest,
                 {
@@ -152,7 +163,6 @@ def scan_ingest_missed() -> int:
             )
             created += 1
 
-        db.commit()
         log.info("startup_scan_complete", new_jobs=created)
     except Exception:
         log.exception("startup_scan_error")

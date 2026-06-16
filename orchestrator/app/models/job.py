@@ -22,7 +22,7 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    file_hash: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=True, unique=True, index=True)
     source_path: Mapped[str] = mapped_column(Text, nullable=True)
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus), default=JobStatus.pending, nullable=False, index=True

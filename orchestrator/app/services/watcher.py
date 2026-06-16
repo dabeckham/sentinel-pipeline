@@ -5,6 +5,7 @@ import structlog
 from pathlib import Path
 from watchdog.observers.polling import PollingObserver as Observer
 from watchdog.events import FileSystemEventHandler
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
@@ -107,6 +108,12 @@ class IngestHandler(FileSystemEventHandler):
             except Exception:
                 pass
 
+        except IntegrityError:
+            # Lost a dedup race (the background scan or another on_created event
+            # inserted this file_hash first). The unique constraint rejected the
+            # duplicate — benign, the other path already queued the job.
+            db.rollback()
+            log.info("ingest_duplicate_race_skipped", path=path)
         except Exception:
             log.exception("ingest_process_error", path=path)
             db.rollback()
@@ -175,9 +182,18 @@ def resume_watcher():
         _observer = obs
     log.info("file_watcher_resumed", path=settings.ingest_watch_path)
 
-    # Pick up any files that landed while we were paused
-    try:
-        from app.services.startup_recovery import scan_ingest_missed
-        scan_ingest_missed()
-    except Exception:
-        log.exception("file_watcher_resume_scan_error")
+    # Pick up any files that landed while we were paused. Run in a background
+    # thread: hashing hundreds of videos over NFS takes minutes, and this is
+    # called from the lifespan startup (and the health-monitor resume) — it
+    # must NOT block the orchestrator from serving the API and live watcher.
+    # The observer is already running above, so new arrivals are handled live;
+    # the scan only backfills pre-existing files. Both insert paths are guarded
+    # by the unique file_hash constraint, so the overlap is race-safe.
+    def _bg_scan():
+        try:
+            from app.services.startup_recovery import scan_ingest_missed
+            scan_ingest_missed()
+        except Exception:
+            log.exception("file_watcher_resume_scan_error")
+
+    threading.Thread(target=_bg_scan, daemon=True, name="ingest-scan").start()
