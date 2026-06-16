@@ -307,6 +307,54 @@ function TrackDrawer({ trackId, onClose }) {
   const dragRef   = useRef(null)
   const viewerRef = useRef(null)
 
+  // ── Video playback (real clip from NAS) + bbox toggle + download ──────────
+  const [showBbox, setShowBbox]       = useState(true)
+  const [videoMode, setVideoMode]     = useState(false)
+  const [videoUrl, setVideoUrl]       = useState(null)
+  const [videoLoading, setVideoLoading] = useState(false)
+  const [videoErr, setVideoErr]       = useState(false)
+  const videoUrlRef = useRef(null)
+
+  // Fetch the clip with the JWT header into a blob (native <video> seeks the
+  // local blob; same blob backs the download button). Cached per open.
+  const ensureVideo = useCallback(async () => {
+    if (videoUrlRef.current) return videoUrlRef.current
+    if (!detail?.job_id) return null
+    setVideoLoading(true); setVideoErr(false)
+    try {
+      const token = localStorage.getItem('sentinel_token')
+      const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) throw new Error(res.status)
+      const url = URL.createObjectURL(await res.blob())
+      videoUrlRef.current = url
+      setVideoUrl(url)
+      return url
+    } catch {
+      setVideoErr(true)
+      return null
+    } finally {
+      setVideoLoading(false)
+    }
+  }, [detail])
+
+  const playVideo = async () => { setPlaying(false); const u = await ensureVideo(); if (u) setVideoMode(true) }
+  const downloadVideo = async () => {
+    const u = await ensureVideo()
+    if (!u) return
+    const a = document.createElement('a')
+    a.href = u; a.download = `job_${detail?.job_id}.mp4`
+    document.body.appendChild(a); a.click(); a.remove()
+  }
+
+  // Reset/cleanup video when the track changes or modal unmounts
+  useEffect(() => {
+    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
+    setVideoUrl(null); setVideoMode(false); setVideoErr(false)
+  }, [trackId])
+  useEffect(() => () => { if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current) }, [])
+
   useEffect(() => {
     if (!autoZoom) return
     const bbox = curDet?.bbox
@@ -368,6 +416,14 @@ function TrackDrawer({ trackId, onClose }) {
                   className="accent-brand w-3 h-3" />
                 Auto-zoom
               </label>
+              <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+                <input type="checkbox" checked={showBbox}
+                  onChange={e => setShowBbox(e.target.checked)}
+                  className="accent-brand w-3 h-3" />
+                Bbox
+              </label>
+              <button onClick={downloadVideo} title="Download clip"
+                className="text-slate-400 hover:text-white transition-colors text-base leading-none">⬇</button>
               <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors text-xl leading-none">✕</button>
             </div>
           </div>
@@ -386,6 +442,10 @@ function TrackDrawer({ trackId, onClose }) {
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                   onDoubleClick={handleDoubleClick}
                 >
+                  {videoMode && videoUrl && (
+                    <video src={videoUrl} controls autoPlay
+                      className="absolute inset-0 w-full h-full object-contain bg-black z-10" />
+                  )}
                   <div style={{
                     position: 'absolute', inset: 0,
                     transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
@@ -394,7 +454,7 @@ function TrackDrawer({ trackId, onClose }) {
                     willChange: 'transform',
                   }}>
                     <SnapshotImg path={currentSnapshotPath} onNaturalSize={setImgSize} />
-                    <BboxOverlay bbox={curDet?.bbox} imgSize={imgSize} viewerEl={viewerRef.current} zoom={zoom} />
+                    {showBbox && <BboxOverlay bbox={curDet?.bbox} imgSize={imgSize} viewerEl={viewerRef.current} zoom={zoom} />}
                   </div>
                   {dets.length > 0 && (
                     <div className="absolute top-2 right-2 bg-black/70 text-white text-xs font-mono px-2 py-1 rounded pointer-events-none">
@@ -418,27 +478,25 @@ function TrackDrawer({ trackId, onClose }) {
                   )}
                 </div>
 
-                {!hasCrops && dets.length > 0 && (
-                  <div className="text-center text-xs text-slate-500 py-2 bg-slate-800/60 border-b border-slate-700">
-                    Frame-by-frame playback available for tracks processed after v0.5.1
-                  </div>
-                )}
-
-                {hasCrops && dets.length > 0 && (
-                  <div className="flex items-center justify-center gap-3 px-4 py-3 bg-slate-800/80 border-b border-slate-700 shrink-0">
-                    <button onClick={() => { setPlaying(false); setDetIdx(i => Math.max(0, i - 1)) }}
-                      className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-700 hover:bg-slate-600 text-white transition-colors text-sm">◀</button>
-                    <button onClick={() => setPlaying(p => !p)}
-                      className="w-10 h-10 flex items-center justify-center rounded-full bg-brand hover:bg-brand/80 text-white transition-colors text-base font-bold">
-                      {playing ? '⏸' : '▶'}
+                <div className="flex items-center justify-center gap-3 px-4 py-3 bg-slate-800/80 border-b border-slate-700 shrink-0">
+                  {!videoMode ? (
+                    <button onClick={playVideo} disabled={videoLoading}
+                      className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-brand hover:bg-brand/80 text-white text-sm font-medium transition-colors disabled:opacity-50">
+                      {videoLoading ? 'Loading…' : '▶ Play video'}
                     </button>
-                    <button onClick={() => { setPlaying(false); setDetIdx(i => Math.min(dets.length - 1, i + 1)) }}
-                      className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-700 hover:bg-slate-600 text-white transition-colors text-sm">▶</button>
+                  ) : (
+                    <button onClick={() => setVideoMode(false)}
+                      className="px-4 py-1.5 rounded-full bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium transition-colors">
+                      ◼ Show still
+                    </button>
+                  )}
+                  {!videoMode && dets.length > 1 && (
                     <input type="range" min={0} max={dets.length - 1} value={detIdx}
                       onChange={e => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
-                      className="flex-1 accent-brand" />
-                  </div>
-                )}
+                      className="flex-1 accent-brand" title="scrub detections (moves the bbox on the still)" />
+                  )}
+                  {videoErr && <span className="text-xs text-red-400">clip unavailable</span>}
+                </div>
 
                 <div className="p-4 space-y-4">
                   <div className="grid grid-cols-2 gap-2">
@@ -467,8 +525,8 @@ function TrackDrawer({ trackId, onClose }) {
                       <div className="rounded-lg border border-slate-700 divide-y divide-slate-700/50 overflow-hidden">
                         {dets.map((d, i) => (
                           <button key={d.id}
-                            onClick={() => hasCrops && (setPlaying(false), setDetIdx(i))}
-                            className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${hasCrops && i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : hasCrops ? 'hover:bg-slate-800/60' : 'cursor-default'}`}
+                            onClick={() => { setPlaying(false); setVideoMode(false); setDetIdx(i) }}
+                            className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : 'hover:bg-slate-800/60'}`}
                           >
                             <span className="text-slate-500 font-mono w-16 shrink-0">f {d.frame_index}</span>
                             <span className="text-slate-300 flex-1 capitalize">{d.class_label ?? '—'}</span>
