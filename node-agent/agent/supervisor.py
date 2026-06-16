@@ -40,7 +40,7 @@ class Supervisor:
     _ALIVE = {"running", "created", "restarting"}
 
     def counts(self) -> dict[str, int]:
-        out = {"oc": 0, "md": 0}
+        out = {"oc": 0, "md": 0, "transcode": 0}
         for c in self._managed():
             if c.status in self._ALIVE:
                 t = c.labels.get(LABEL_TYPE)
@@ -130,6 +130,39 @@ class Supervisor:
         c = self._client.containers.run(self._s.md_image, **spec)
         log.info("supervisor_started", worker_type="md", name=c.name)
         return c.name
+
+    def _start_transcode(self) -> str:
+        spec = self._common("transcode")
+        spec["environment"] = {
+            "RABBITMQ_HOST": "rabbitmq", "MINIO_ENDPOINT": "minio:9000",
+            "WORKER_TYPE": "transcode",
+            "CUDA_VISIBLE_DEVICES": "0",   # the single device exposed below
+            "AGENT_ID": self._agent_id,
+        }
+        # Read-only source clips; renditions go to MinIO, not the mount.
+        spec["volumes"][self._s.ingest_source] = {"bind": "/ingest", "mode": "ro"}
+        spec["device_requests"] = [
+            DeviceRequest(device_ids=[self._s.transcode_gpu_id], capabilities=[["gpu"]])
+        ]
+        c = self._client.containers.run(self._s.transcode_image, **spec)
+        log.info("supervisor_started", worker_type="transcode",
+                 name=c.name, gpu=self._s.transcode_gpu_id)
+        return c.name
+
+    def ensure_transcode(self) -> None:
+        """Keep exactly one transcode worker alive (always-on, no demand scaling).
+        Cheap idle cost; renditions must be ready quickly when a user hits play."""
+        if not self._s.transcode_enabled:
+            return
+        if self.counts().get("transcode", 0) >= 1:
+            return
+        if self._s.dry_run:
+            log.info("supervisor_dry_run_start", worker_type="transcode")
+            return
+        try:
+            self._start_transcode()
+        except Exception:
+            log.exception("supervisor_start_failed", worker_type="transcode")
 
     # ── Scale down ──────────────────────────────────────────────────────────
     def park(self, worker_type: str) -> str | None:

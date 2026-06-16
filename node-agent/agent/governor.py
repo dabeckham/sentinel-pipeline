@@ -47,6 +47,7 @@ class Governor:
 
     def tick(self) -> None:
         self._sup.reap()                 # clear exited (crashed/parked) workers first
+        self._sup.ensure_transcode()     # keep the always-on playback transcoder alive
         res = resources.probe()
         b = compute_budget(res, self._s)
         dem = broker.demand(self._s)

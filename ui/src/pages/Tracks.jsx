@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../api.js'
 import { useWsEvent } from '../WsContext.jsx'
+import { getPlaybackProfile } from '../lib/playbackProfile.js'
 
 // ── Class colour map ──────────────────────────────────────────────────────────
 const CLASS_COLORS = {
@@ -313,45 +314,75 @@ function TrackDrawer({ trackId, onClose }) {
   const [videoUrl, setVideoUrl]       = useState(null)
   const [videoLoading, setVideoLoading] = useState(false)
   const [videoErr, setVideoErr]       = useState(false)
+  const [videoPrep, setVideoPrep]     = useState('')   // status while transcoding
   const videoUrlRef = useRef(null)
+  const prepCancelRef = useRef(false)
 
-  // Fetch the clip with the JWT header into a blob (native <video> seeks the
-  // local blob; same blob backs the download button). Cached per open.
-  const ensureVideo = useCallback(async () => {
+  // Adaptive playback. The source is 11MP HEVC (browsers can't decode it), so we
+  // profile this browser once (max decodable H.264 height + bandwidth) and ask
+  // the backend for a rendition at that height. The first request kicks off a
+  // GPU transcode and returns 202; we poll until the H.264 rendition is ready,
+  // then play it from a blob. Cached per open. Download uses the original clip.
+  const ensurePlayback = useCallback(async () => {
     if (videoUrlRef.current) return videoUrlRef.current
     if (!detail?.job_id) return null
-    setVideoLoading(true); setVideoErr(false)
+    setVideoLoading(true); setVideoErr(false); setVideoPrep('')
+    prepCancelRef.current = false
     try {
       const token = localStorage.getItem('sentinel_token')
-      const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      if (!res.ok) throw new Error(res.status)
-      const url = URL.createObjectURL(await res.blob())
-      videoUrlRef.current = url
-      setVideoUrl(url)
-      return url
+      const auth = token ? { Authorization: `Bearer ${token}` } : {}
+      const { targetHeight } = await getPlaybackProfile()
+      const url = `/api/jobs/${detail.job_id}/playback?h=${targetHeight}`
+      // 202 → still transcoding; poll (~1.5s) up to ~60s before giving up.
+      for (let i = 0; i < 40; i++) {
+        if (prepCancelRef.current) return null
+        const res = await fetch(url, { headers: auth })
+        if (res.status === 202) {
+          setVideoPrep('Preparing playback…')
+          await new Promise(r => setTimeout(r, 1500))
+          continue
+        }
+        if (!res.ok) throw new Error(res.status)
+        const blobUrl = URL.createObjectURL(await res.blob())
+        videoUrlRef.current = blobUrl
+        setVideoUrl(blobUrl); setVideoPrep('')
+        return blobUrl
+      }
+      throw new Error('transcode timeout')
     } catch {
-      setVideoErr(true)
+      setVideoErr(true); setVideoPrep('')
       return null
     } finally {
       setVideoLoading(false)
     }
   }, [detail])
 
-  const playVideo = async () => { setPlaying(false); const u = await ensureVideo(); if (u) setVideoMode(true) }
+  const playVideo = async () => { setPlaying(false); const u = await ensurePlayback(); if (u) setVideoMode(true) }
+
+  // Download the ORIGINAL full-resolution clip (not the downscaled rendition).
   const downloadVideo = async () => {
-    const u = await ensureVideo()
-    if (!u) return
-    const a = document.createElement('a')
-    a.href = u; a.download = `job_${detail?.job_id}.mp4`
-    document.body.appendChild(a); a.click(); a.remove()
+    if (!detail?.job_id) return
+    try {
+      const token = localStorage.getItem('sentinel_token')
+      const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) throw new Error(res.status)
+      const u = URL.createObjectURL(await res.blob())
+      const a = document.createElement('a')
+      a.href = u; a.download = `job_${detail.job_id}.mp4`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(u), 30000)
+    } catch {
+      setVideoErr(true)
+    }
   }
 
   // Reset/cleanup video when the track changes or modal unmounts
   useEffect(() => {
+    prepCancelRef.current = true   // stop any in-flight transcode poll
     if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
-    setVideoUrl(null); setVideoMode(false); setVideoErr(false)
+    setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoPrep('')
   }, [trackId])
   useEffect(() => () => { if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current) }, [])
 
@@ -482,7 +513,7 @@ function TrackDrawer({ trackId, onClose }) {
                   {!videoMode ? (
                     <button onClick={playVideo} disabled={videoLoading}
                       className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-brand hover:bg-brand/80 text-white text-sm font-medium transition-colors disabled:opacity-50">
-                      {videoLoading ? 'Loading…' : '▶ Play video'}
+                      {videoLoading ? (videoPrep || 'Loading…') : '▶ Play video'}
                     </button>
                   ) : (
                     <button onClick={() => setVideoMode(false)}
