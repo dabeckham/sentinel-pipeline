@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, Enum, Text
+from sqlalchemy import String, DateTime, Enum, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
@@ -44,3 +44,10 @@ class Job(Base):
     # Worker identity — hostname-type-pid of the worker that handled each stage
     md_worker_id:    Mapped[str] = mapped_column(String(128), nullable=True)
     oc_worker_id:    Mapped[str] = mapped_column(String(128), nullable=True)
+    # One representative snapshot for the whole clip (the dwell substrate /
+    # fallback once the source video is purged). For empty clips this is the
+    # forced scene keyframe; for no-motion clips the single kept best-shot.
+    snapshot_path:   Mapped[str]  = mapped_column(String(256), nullable=True)
+    # Set true when the source video has been deleted (snapshot is all that's left).
+    source_deleted:  Mapped[bool] = mapped_column(Boolean, nullable=False,
+                                                  default=False, server_default="false")

@@ -142,6 +142,34 @@ def process_job(msg: dict, ch, method):
                 current += 1
             cap.release()
 
+        # ── Always keep at least one snapshot per clip (dwell substrate) ──────
+        # If nothing was detected, save one scene keyframe (middle motion frame)
+        # so even empty triggers leave an image to answer "how long has that
+        # unclassified thing been there?".
+        scene_snapshot_path = None
+        if not detections and motion_frames:
+            mid = motion_frames[len(motion_frames) // 2]
+            cap = cv2.VideoCapture(video_path)
+            current = 0
+            keyframe = None
+            while current <= mid:
+                ok, f = cap.read()
+                if not ok:
+                    break
+                if current == mid:
+                    keyframe = f
+                    break
+                current += 1
+            cap.release()
+            if keyframe is not None:
+                scene_snapshot_path = f"{job_id}/scene.jpg"
+                _upload_pool.submit(
+                    _upload_best_shot,
+                    settings.minio_bucket_snapshots,
+                    scene_snapshot_path,
+                    keyframe.copy(),
+                )
+
         # ── Publish ONE message with all detections bundled ───────────────────
         # Annotate each detection with its best-shot path.
         best_shot_map = {
@@ -156,12 +184,13 @@ def process_job(msg: dict, ch, method):
             exchange="",
             routing_key=settings.queue_oc_results,
             body=json.dumps({
-                "job_id":          job_id,
-                "is_final":        True,
-                "detections":      detections,
-                "worker_id":       WORKER_ID,
-                "osd_camera_name": osd_camera_name,
-                "osd_recorded_at": osd_recorded_at,
+                "job_id":             job_id,
+                "is_final":           True,
+                "detections":         detections,
+                "worker_id":          WORKER_ID,
+                "osd_camera_name":    osd_camera_name,
+                "osd_recorded_at":    osd_recorded_at,
+                "scene_snapshot_path": scene_snapshot_path,
             }),
             properties=pika.BasicProperties(
                 delivery_mode=2, content_type="application/json"),

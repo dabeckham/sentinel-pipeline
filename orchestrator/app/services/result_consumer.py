@@ -109,6 +109,53 @@ def _classify_tracks(db, job_id: int) -> None:
              threshold=threshold)
 
 
+def _set_representative_snapshot(db, job, scene_path) -> None:
+    """Give the clip one representative image (job.snapshot_path). For a clip
+    with NO moving object, keep only that one — delete the redundant
+    per-stationary-track best-shots from MinIO and repoint those tracks to it.
+    Motion clips keep every track's best-shot untouched. Must run AFTER
+    _classify_tracks (it reads track_type)."""
+    tracks = db.query(Track).filter_by(job_id=job.id).all()
+    if not tracks:
+        job.snapshot_path = scene_path                 # empty clip → forced keyframe
+        return
+
+    snapped = [t for t in tracks if t.snapshot_path]
+    moving  = [t for t in tracks if t.track_type == "moving"]
+
+    if moving:
+        rep = next((t for t in moving if t.snapshot_path), snapped[0] if snapped else None)
+        job.snapshot_path = rep.snapshot_path if rep else scene_path
+        return
+
+    # No moving object — collapse to a single representative snapshot.
+    if not snapped:
+        job.snapshot_path = scene_path
+        return
+    rep = max(snapped, key=lambda t: (t.last_frame or 0) - (t.first_frame or 0))
+    job.snapshot_path = rep.snapshot_path
+
+    try:
+        from app.minio_client import get_minio
+        mc = get_minio()
+        bucket = get_settings().minio_bucket_snapshots
+    except Exception:
+        mc = None
+    removed = 0
+    for t in snapped:
+        if t.id == rep.id:
+            continue
+        if mc and t.snapshot_path and t.snapshot_path != rep.snapshot_path:
+            try:
+                mc.remove_object(bucket, t.snapshot_path)
+                removed += 1
+            except Exception:
+                pass
+        t.snapshot_path = rep.snapshot_path           # repoint so the UI has no 404s
+    if removed:
+        log.info("snapshots_consolidated", job_id=job.id, removed=removed, kept=rep.snapshot_path)
+
+
 def _mark_source_processed(job) -> None:
     """Rename the source clip to processed_<name> on the ingest mount and update
     job.file_path to match. Idempotent and best-effort: a missing file or a
@@ -326,6 +373,9 @@ def _handle_message(body: bytes):
             # reads the full, persisted path of each track.
             db.flush()
             _classify_tracks(db, job_id)
+            # One representative snapshot per clip; collapse no-motion clips to a
+            # single image (the dwell substrate). Runs after classification.
+            _set_representative_snapshot(db, job, msg.get("scene_snapshot_path"))
             # Flag the source clip as processed: rename to processed_<name> on the
             # NAS and repoint file_path. Lifecycle marker (toward later purge) and
             # lets the recovery scan skip it without re-hashing. Only on success.
