@@ -1,0 +1,40 @@
+# Node-agent (Phase 1 local self-governor).
+# Kept in a SEPARATE file so it never auto-starts — bring it up explicitly:
+#   docker compose -f docker-compose.yml -f docker-compose.node-agent.yml up -d node-agent
+# Ships in DRY_RUN (observe-only). Flip AGENT_DRY_RUN=false once the decisions
+# look right in the logs.
+
+services:
+  node-agent:
+    build:
+      context: ./node-agent
+      dockerfile: Dockerfile
+    image: sentinel-node-agent:latest
+    container_name: sentinel-node-agent
+    restart: unless-stopped
+    environment:
+      AGENT_NODE_NAME: orchestrator-host
+      AGENT_DRY_RUN: "true"                       # observe-only until validated
+      AGENT_RESERVE_CORES: "3"                    # leave 3 cores for Frigate/Ollama/OS
+      AGENT_RABBITMQ_USER: ${RABBITMQ_USER}
+      AGENT_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      AGENT_RABBITMQ_MGMT_URL: http://rabbitmq:15672
+      # Host paths the agent bind-mounts into the workers it launches:
+      AGENT_ENV_FILE_HOST_PATH: ${ENV_FILE_HOST_PATH:-/home/dabeckham/sentinel-pipeline/.env}
+      AGENT_INGEST_SOURCE: ${INGEST_SOURCE_PATH:-/mnt/ds-one/sentinel-ingest}
+      AGENT_OC_GPU_IDS: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock          # manage worker containers
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro          # GPU probe (same as orchestrator)
+      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    devices:
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidia1:/dev/nvidia1
+    networks:
+      - sentinel-net
+
+networks:
+  sentinel-net:
+    external: true
+    name: sentinel-pipeline_sentinel-net

@@ -1,0 +1,4 @@
+psutil==6.1.0
+docker==7.1.0
+pydantic-settings==2.6.1
+structlog==24.4.0
