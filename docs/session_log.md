@@ -27,9 +27,12 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 ## Current Status — ALL 5 PHASES COMPLETE ✅ + v0.6.0
 
 **Orchestrator version: 0.6.0**  
-**Active branch: `main`** (last commit `dbbfab1` — non-blocking startup + unique file_hash, session 16)  
-**Alembic migration head: `0009`**  
-**4 OC workers running:** GPU 1 (workers 1, 3, 4) + GPU 0 (worker 2, shares with Frigate)
+**Active branch: `main`** (last commit `acccd5c` — DB-backed ingest switch + OC upload-wait, session 16/17 — 2026-06-16)  
+**Alembic migration head: `0010`**  
+**Workers are now managed by the NODE-AGENT (not static compose).** It governs them
+on local load — currently ~2 MD + 1 OC, load ~5. Do NOT `docker compose up -d`
+(would start the retired static worker services). Ingestion is ON (DB-pinned).
+Backlog held: ~5,309 jobs `paused`. ~6,700+ `completed`.
 
 ### Live Services
 | Service | URL | Status |
@@ -51,7 +54,8 @@ Distributed, containerized video analysis pipeline. Cameras FTP motion-triggered
 | OC Workers | Python 3.10, TRT FP16 (`yolo11s.engine`) + ByteTrack (supervision 0.22.0), 4× GPU |
 | Auth | JWT (python-jose), bcrypt 3.2.2 (pinned), RBAC: admin/operator/viewer |
 | UI | React 18, Vite, TailwindCSS, nginx reverse proxy |
-| Database | PostgreSQL 16, SQLAlchemy 2, Alembic (head: 0008) |
+| Database | PostgreSQL 16, SQLAlchemy 2, Alembic (head: 0010) |
+| Node-agent | Python — per-machine self-governor (`node-agent/`); probes load, scales MD/OC workers; self-generated persistent agent_id |
 | Object Storage | MinIO |
 | Broker | RabbitMQ (pika, durable queues, DLX) |
 
@@ -126,6 +130,7 @@ docker compose build md-worker && docker compose up -d md-worker
 | 0007 | `paused` value added to jobstatus enum |
 | 0008 | pipeline_settings key-value table for persistent orchestrator state |
 | 0009 | `jobs.file_hash` UNIQUE — race-safe ingest dedup |
+| 0010 | `jobs.snapshot_path` (one representative image per clip) + `jobs.source_deleted` |
 
 ---
 
@@ -191,6 +196,9 @@ docker compose build md-worker && docker compose up -d md-worker
 11. **git filter-repo removes the remote** — after purging history, must `git remote add origin` and `git push --set-upstream origin main`
 12. **`SessionLocal` is `autoflush=False`** — any function that re-queries rows added earlier in the same transaction must `db.flush()` first. This bit track classification hard (session 16): `_classify_tracks` queried `Detection` before the pending rows were flushed, saw nothing, and labeled ~94% of tracks `stationary`. Fixed with a `db.flush()` before `_classify_tracks`.
 13. **Startup ingest scan is non-blocking (session 16)** — `scan_ingest_missed()` runs in a daemon thread spawned by `resume_watcher()`, so the lifespan yields immediately and uvicorn serves in ~13s instead of blocking for minutes while it SHA-256-hashes every clip over NFS. The observer starts first, so new arrivals are handled live; the scan only backfills pre-existing files. Dedup is race-safe via the `jobs.file_hash` UNIQUE constraint (migration 0009) — both insert paths catch `IntegrityError` and skip, and the scan commits per file *before* publishing so a race never orphans a queue message. If the pipeline is already backed up at startup, `startup_health_check()` pauses the watcher and the scan is deferred until the health monitor calls `resume_watcher()` — expected behavior.
+14. **Workers are node-agent-managed now (session 17)** — the agent (`node-agent/`, container `sentinel-node-agent`) starts/stops worker containers (labels `sentinel.managed=true`, names `sentinel-{oc,md}-managed-N`) based on local load. The static `oc-worker*`/`md-worker` compose services are RETIRED — **do NOT `docker compose up -d`** (it would start them alongside the agent's). After rebuilding a worker image, recycle the agent's worker (`docker rm -f <name>`; the agent respawns it on `:latest`) — agent doesn't hot-update images yet. Agent state (agent_id) persists in the `node-agent-state` volume.
+15. **`compose up` reverts env-var overrides → use DB for switches (session 17)** — `docker compose up -d <svc>` reconciles a service's *dependencies* too, and any `${VAR:-default}` env not set in that invocation reverts to default. This silently re-enabled ingestion (`docker compose up -d ui` recreated the orchestrator without `INGEST_WATCH_ENABLED=false`). Persistent toggles now live in the `pipeline_settings` DB table (`pipeline_settings.get_bool/set_bool`), read at runtime. Ingest switch: `GET/POST /api/pipeline/ingest`.
+16. **Clips are H.265/HEVC ~11MP (4512×2512)** — Chrome/Edge play HEVC (with OS codec); Firefox/others don't. The video endpoint serves the raw file; non-HEVC browsers need an on-demand H.264 transcode (deferred). Also: OC now **waits for snapshot uploads to land before publishing the final "done"** message (was fire-and-forget → killed/recycled workers lost snapshots). Until done is published+acked the job redelivers — no silent snapshot loss.
 
 ---
 
@@ -242,13 +250,25 @@ The UI worker panel shows labels like `MD-CPU-1`, `OC-GPU-2`, status dots (green
 | 2026-06-08–09 | 15 | **TRT FP16 + ByteTrack + job-descriptor architecture.** MD sends one job descriptor per job (not per-frame). OC opens video directly, TRT FP16 ~42fps. Replaced Norfair with ByteTrack (supervision). 4 OC workers (GPU 1: 1,3,4; GPU 0: 2). Single shared Docker image (`sentinel-oc-worker-gpu:latest`) — no more version skew. Renamed `docker-compose.gpu.yml` → `docker-compose.override.yml` (auto-merged, no `-f` needed). Worker lifecycle events (online/offline/heartbeat). Worker panel with labels, status dots, suspend/resume, stats callout. Bulk job pause/kill (migrations 0006, 0007). Pipeline settings table (migration 0008). Self-healing worker registry (heartbeat bootstraps, 404 re-announce). Security: `.env.backup.with.keys` purged from git history, credentials rotated. RabbitMQ mnesia recovery procedure documented. Issues #40–#49 created and closed. |
 | 2026-06-09 | 16 | **Moving/stationary classification fix.** Diagnosed that ~94% of tracks were labeled `stationary` (cars sweeping across the whole frame included). Root cause: `SessionLocal` is `autoflush=False`, so `_classify_tracks` queried `Detection` before the pending rows were flushed and saw an empty set → every track fell into the `stationary` default. Fixed with a one-line `db.flush()` before `_classify_tracks`. `scripts/backfill_classify.py` re-classified all 6,087 completed jobs from committed data (moving 2,420 → 4,578). Deferred follow-up: first-to-last metric still misses loiter-and-return + ID-switch merges (path-span metric is a trade-off). Issue #50 created and closed. Commit `9214708`. |
 | 2026-06-09 | 16 | **Non-blocking startup.** The lifespan ran `scan_ingest_missed()` synchronously before `yield`, so uvicorn didn't serve until every clip was SHA-256-hashed over NFS (minutes of downtime per restart). Moved the scan to a daemon thread → API serves in ~13s. Made ingest dedup race-safe for the now-fully-concurrent watcher+scan: migration 0009 (`jobs.file_hash` UNIQUE, 0 dups), `IntegrityError` handling in both insert paths, scan commits per file before publishing (no orphaned queue msgs). `recover_stuck_jobs` stays synchronous (DB-only). Issue #51 created and closed. Commit `dbbfab1`. |
+| 2026-06-16 | 17 | **Distributed-worker Phase 1 + storage/lifecycle + playback.** (1) Design doc `docs/distributed_workers_design.md` + epic **#52**: broker→agent→worker hierarchy, autonomous nodes, code-vs-protocol versioning. (2) **Node-agent built & LIVE** (`node-agent/`): probes CPU/RAM/swap(rate)/GPU, shared core-pool budget (reserve for Frigate), demand from queue depth, pure `policy.decide()` (8 tests, no-oversubscribe guard), Docker supervisor, governor loop. **Load 48→5; no more thrash.** Self-generated persistent agent_id; workers report it + code_version(git SHA)+protocol_version(semver). Static compose workers RETIRED — agent owns them. (3) Investigated the "5000-file backlog" → was 5,481 **duplicate** jobs (pre-0009); deleted them, all footage already processed. (4) **Slice 1** processed_ lifecycle: orchestrator renames clip→`processed_<name>` on completion + updates file_path; scan skips processed_; `/ingest` mount ro→rw. (5) **Slice 2** (migration 0010): one snapshot per clip — forced scene keyframe for empty clips, collapse no-motion clips to one best-shot (delete redundant). (6) **Slice 3**: `GET /api/jobs/{id}/video` serves clip from NAS; Tracks modal plays real video (fetch→blob), bbox on/off toggle, download button. Clips are **H.265 11MP** — Chrome/Edge play it, others need transcode (deferred). (7) Fixes: "In status" timer (anchor to stage timestamp not created_at); **DB-backed ingest switch** (`pipeline_settings`, survives compose up — env var was the footgun that silently re-enabled ingestion); **OC waits for snapshot uploads before publishing done** (killed/recycled workers no longer lose snapshots — ~6,537 historical gaps accepted). Last commit `acccd5c`. |
 
 ---
 
-## What's Next
+## What's Next (open items as of session 17)
 
-- **Track classification metric** (deferred from session 16, issue #50): first-to-last displacement misses loiter-and-return tracks and mislabels ID-switch merges of two parked cars (e.g. track 1248: 4411px path span, 1px first-to-last → stationary). A path-span / cumulative-motion metric would catch these but turns ID-switch merges into false `moving` positives. Trade-off — Don to decide.
-- **Dwell time Phase 2** (issue #23): Similar-bbox search — `GET /tracks/{id}/similar?iou_threshold=0.7`
-- **Dwell time Phase 3**: Dwell zones table, admin UI to draw zones, auto-tag at job close-out
-- **Phase 7:** RTSP live stream worker pool
-- **Cron backup:** PostgreSQL daily backup + MinIO nightly mirror
+**Distributed-worker follow-ups (epic #52):**
+- **UI: show worker version + agent_id** in the worker panel (data is on `/api/workers`, not displayed yet) + a "stale" badge; then **compatibility gating** (accept/suspend on protocol MAJOR mismatch) and **enrollment auth** (Phase 2). Agent self-generates id, accepted at enrollment gated by auth.
+- **Capture the identity/versioning design** in `docs/distributed_workers_design.md` (broker→agent→worker hierarchy; code_version=git SHA observability vs protocol_version=semver gated on MAJOR for mixed-version canary). *Owed — not yet written.*
+- Phases 2–4: node enrollment + overlay transport; networked data plane (clips over object store vs NAS mount); installer.
+
+**Slice / UI work:**
+- **NEW — Job Details page:** make each row on the Jobs page clickable → a per-job details page with as much info as possible, incl. **workflow details (who/what/when — md_worker_id, oc_worker_id, the stage timestamps, etc.)** and **track cards like the Tracks page but filtered to that job**.
+- **Slice 4 — purge-no-motion-source UI:** delete `processed_*` source videos for no-motion clips (keep snapshot + DB row); set `jobs.source_deleted=true`.
+- **bbox overlay on the *moving* video** (slice 3 follow-up): needs `video_fps` stored + SVG synced to `currentTime`. Currently the bbox toggle only gates the still overlay.
+- **Video transcode** for non-HEVC browsers (clips are H.265 11MP): on-demand H.264 transcode + cache, CPU or GPU (NVENC). Deferred — Don's browser plays HEVC.
+
+**Pre-existing / older:**
+- **Track classification metric** (issue #50): first-to-last displacement misses loiter-and-return + ID-switch merges. Path-span metric is a trade-off (would false-positive ID-switch merges). NOTE: historical detection/classification data is **unreliable** (degraded-era processing) — a clean re-baseline is needed before camera-tuning decisions.
+- **Camera over-sensitivity:** ll-driveway ~540–1000 clips/day, ~42% no-motion (figure suspect — see above); parsley-gate delivering 0 files. Consider camera motion zones/sensitivity tuning.
+- **Dwell time Phase 2/3** (issue #23): similar-bbox search; dwell zones.
+- **Phase 7:** RTSP live streams. **Cron backup:** PG daily + MinIO nightly.
