@@ -147,16 +147,19 @@ def process_job(msg: dict, ch, method):
         # so even empty triggers leave an image to answer "how long has that
         # unclassified thing been there?".
         scene_snapshot_path = None
-        if not detections and motion_frames:
-            mid = motion_frames[len(motion_frames) // 2]
+        if not detections:
+            # Middle motion frame, or frame 0 when MD found no motion at all
+            # (a false trigger) — those are exactly the clips we still want a
+            # scene image for (dwell on unclassified objects).
+            target = motion_frames[len(motion_frames) // 2] if motion_frames else 0
             cap = cv2.VideoCapture(video_path)
             current = 0
             keyframe = None
-            while current <= mid:
+            while current <= target:
                 ok, f = cap.read()
                 if not ok:
                     break
-                if current == mid:
+                if current == target:
                     keyframe = f
                     break
                 current += 1
