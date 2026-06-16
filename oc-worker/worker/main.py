@@ -123,8 +123,13 @@ def process_job(msg: dict, ch, method):
         # Collect the futures so we can confirm they land before publishing done.
         upload_futures = []
         if best_candidates:
-            needed_frames = {det["frame_index"]: track_id
-                             for track_id, det in best_candidates.items()}
+            # Several tracks can share their best frame_index (multiple objects
+            # most-centered on the same frame).  Map each frame to a LIST of
+            # track_ids so a collision doesn't silently drop a track's best-shot
+            # — the bug that left DB-referenced snapshots missing from MinIO.
+            needed_frames: dict[int, list[int]] = {}
+            for track_id, det in best_candidates.items():
+                needed_frames.setdefault(det["frame_index"], []).append(track_id)
             max_fi = max(needed_frames)
             cap = cv2.VideoCapture(video_path)
             current = 0
@@ -133,14 +138,14 @@ def process_job(msg: dict, ch, method):
                 if not ok:
                     break
                 if current in needed_frames:
-                    tid  = needed_frames[current]
-                    name = f"{job_id}/track_{tid:06d}_best.jpg"
-                    upload_futures.append(_upload_pool.submit(
-                        _upload_best_shot,
-                        settings.minio_bucket_snapshots,
-                        name,
-                        frame.copy(),
-                    ))
+                    for tid in needed_frames[current]:
+                        name = f"{job_id}/track_{tid:06d}_best.jpg"
+                        upload_futures.append(_upload_pool.submit(
+                            _upload_best_shot,
+                            settings.minio_bucket_snapshots,
+                            name,
+                            frame.copy(),
+                        ))
                 current += 1
             cap.release()
 
