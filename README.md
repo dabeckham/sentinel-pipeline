@@ -237,6 +237,7 @@ Migrations run automatically on orchestrator startup.
 - [Disaster Recovery](docs/disaster_recovery.md) — backup, restore, recovery procedures
 - [Session Log](docs/session_log.md) — full build history, current state, how to resume after context reset
 - [Architecture Outline](docs/architecture_outline.md)
+- [Distributed Workers Design](docs/distributed_workers_design.md) — proposed self-governing node-agent architecture (design, not yet built)
 
 ---
 
