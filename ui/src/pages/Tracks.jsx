@@ -315,6 +315,8 @@ function TrackDrawer({ trackId, onClose }) {
   const [videoLoading, setVideoLoading] = useState(false)
   const [videoErr, setVideoErr]       = useState(false)
   const [videoPrep, setVideoPrep]     = useState('')   // status while transcoding
+  const [downloading, setDownloading] = useState(false)
+  const [downloadErr, setDownloadErr] = useState(false)
   const videoUrlRef = useRef(null)
   const prepCancelRef = useRef(false)
 
@@ -360,8 +362,11 @@ function TrackDrawer({ trackId, onClose }) {
   const playVideo = async () => { setPlaying(false); const u = await ensurePlayback(); if (u) setVideoMode(true) }
 
   // Download the ORIGINAL full-resolution clip (not the downscaled rendition).
+  // Has its OWN error state — a download hiccup must not surface as a playback
+  // "unavailable" message (they're independent actions).
   const downloadVideo = async () => {
-    if (!detail?.job_id) return
+    if (!detail?.job_id || downloading) return
+    setDownloading(true); setDownloadErr(false)
     try {
       const token = localStorage.getItem('sentinel_token')
       const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
@@ -374,7 +379,9 @@ function TrackDrawer({ trackId, onClose }) {
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(u), 30000)
     } catch {
-      setVideoErr(true)
+      setDownloadErr(true)
+    } finally {
+      setDownloading(false)
     }
   }
 
@@ -383,6 +390,7 @@ function TrackDrawer({ trackId, onClose }) {
     prepCancelRef.current = true   // stop any in-flight transcode poll
     if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
     setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoPrep('')
+    setDownloading(false); setDownloadErr(false)
   }, [trackId])
   useEffect(() => () => { if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current) }, [])
 
@@ -453,8 +461,11 @@ function TrackDrawer({ trackId, onClose }) {
                   className="accent-brand w-3 h-3" />
                 Bbox
               </label>
-              <button onClick={downloadVideo} title="Download clip"
-                className="text-slate-400 hover:text-white transition-colors text-base leading-none">⬇</button>
+              <button onClick={downloadVideo} disabled={downloading} title="Download the original full-resolution clip"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition-colors disabled:opacity-50">
+                {downloading ? 'Downloading…' : '⬇ Download'}
+              </button>
+              {downloadErr && <span className="text-xs text-red-400">download failed</span>}
               <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors text-xl leading-none">✕</button>
             </div>
           </div>
@@ -475,6 +486,7 @@ function TrackDrawer({ trackId, onClose }) {
                 >
                   {videoMode && videoUrl && (
                     <video src={videoUrl} controls autoPlay
+                      onError={() => { setVideoErr(true); setVideoMode(false) }}
                       className="absolute inset-0 w-full h-full object-contain bg-black z-10" />
                   )}
                   <div style={{
@@ -526,7 +538,7 @@ function TrackDrawer({ trackId, onClose }) {
                       onChange={e => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
                       className="flex-1 accent-brand" title="scrub detections (moves the bbox on the still)" />
                   )}
-                  {videoErr && <span className="text-xs text-red-400">clip unavailable</span>}
+                  {videoErr && <span className="text-xs text-red-400">playback failed — try Download</span>}
                 </div>
 
                 <div className="p-4 space-y-4">
