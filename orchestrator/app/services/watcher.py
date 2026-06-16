@@ -165,8 +165,11 @@ def resume_watcher():
     Restart the file watcher and immediately scan for any files that
     arrived while it was paused.  Called by the health monitor on recovery.
     """
-    if not get_settings().ingest_watch_enabled:
-        log.warning("file_watcher_disabled", reason="ingest_watch_enabled=false")
+    # DB-backed switch (survives any compose up); env value is only the initial
+    # default when the DB has no row yet.
+    from app.services import pipeline_settings
+    if not pipeline_settings.get_bool("ingest_watch_enabled", get_settings().ingest_watch_enabled):
+        log.warning("file_watcher_disabled", reason="ingest_watch_enabled=false (db)")
         return
 
     global _observer

@@ -119,7 +119,9 @@ def process_job(msg: dict, ch, method):
                 _best_shot_score[key] = score
                 best_candidates[track_id] = det
 
-        # Upload best-shot frames (sequential read, only needed frame indices)
+        # Upload best-shot frames (sequential read, only needed frame indices).
+        # Collect the futures so we can confirm they land before publishing done.
+        upload_futures = []
         if best_candidates:
             needed_frames = {det["frame_index"]: track_id
                              for track_id, det in best_candidates.items()}
@@ -133,12 +135,12 @@ def process_job(msg: dict, ch, method):
                 if current in needed_frames:
                     tid  = needed_frames[current]
                     name = f"{job_id}/track_{tid:06d}_best.jpg"
-                    _upload_pool.submit(
+                    upload_futures.append(_upload_pool.submit(
                         _upload_best_shot,
                         settings.minio_bucket_snapshots,
                         name,
                         frame.copy(),
-                    )
+                    ))
                 current += 1
             cap.release()
 
@@ -166,12 +168,22 @@ def process_job(msg: dict, ch, method):
             cap.release()
             if keyframe is not None:
                 scene_snapshot_path = f"{job_id}/scene.jpg"
-                _upload_pool.submit(
+                upload_futures.append(_upload_pool.submit(
                     _upload_best_shot,
                     settings.minio_bucket_snapshots,
                     scene_snapshot_path,
                     keyframe.copy(),
-                )
+                ))
+
+        # Confirm every snapshot upload has landed BEFORE publishing "done", so a
+        # worker killed/recycled mid-job can't leave the DB referencing a snapshot
+        # that never uploaded. Until the final message is published+acked the job
+        # stays unacknowledged and RabbitMQ redelivers it — no silent snapshot loss.
+        for fut in upload_futures:
+            try:
+                fut.result(timeout=60)
+            except Exception:
+                log.warning("oc_snapshot_upload_incomplete", job_id=job_id)
 
         # ── Publish ONE message with all detections bundled ───────────────────
         # Annotate each detection with its best-shot path.
