@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"   # tolerate extra keys in a shared .env (e.g. project PORT_* vars)
 
 
 @lru_cache

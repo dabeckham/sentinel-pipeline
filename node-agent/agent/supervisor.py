@@ -32,15 +32,34 @@ class Supervisor:
         self._gpu_rr = 0  # round-robin index into oc_gpu_id_list
 
     # ── Discovery ───────────────────────────────────────────────────────────
+    # A worker counts as "present" while running, just-created, or restarting —
+    # anything not terminal. This avoids a double-spawn race when a tick lands
+    # before a freshly started container reaches "running".
+    _ALIVE = {"running", "created", "restarting"}
+
     def counts(self) -> dict[str, int]:
-        """Running managed worker counts by type, e.g. {'oc': 2, 'md': 3}."""
         out = {"oc": 0, "md": 0}
         for c in self._managed():
-            if c.status == "running":
+            if c.status in self._ALIVE:
                 t = c.labels.get(LABEL_TYPE)
                 if t in out:
                     out[t] += 1
         return out
+
+    def reap(self) -> int:
+        """Remove exited managed containers (crashed or parked) so they don't
+        accumulate. Returns how many were removed."""
+        n = 0
+        for c in self._managed():
+            if c.status in ("exited", "dead"):
+                try:
+                    c.remove(force=True)
+                    n += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        if n:
+            log.info("supervisor_reaped", removed=n)
+        return n
 
     def _managed(self) -> list:
         return self._client.containers.list(

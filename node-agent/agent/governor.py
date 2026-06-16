@@ -46,6 +46,7 @@ class Governor:
         return rate
 
     def tick(self) -> None:
+        self._sup.reap()                 # clear exited (crashed/parked) workers first
         res = resources.probe()
         b = compute_budget(res, self._s)
         dem = broker.demand(self._s)
