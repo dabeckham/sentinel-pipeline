@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     ingest_poll_interval: int = 10
     # Comma-separated subdirectory names to ignore when recursing (e.g. debug output)
     ingest_ignore_dirs: str = "debug"
+    # Master switch for automatic ingestion (file watcher + startup backfill scan).
+    # Set INGEST_WATCH_ENABLED=false to bring the orchestrator up WITHOUT pulling
+    # in on-disk files — useful when a large /ingest backlog should not be
+    # reprocessed automatically. recover_stuck_jobs still runs.
+    ingest_watch_enabled: bool = True
 
     # Auth
     jwt_secret_key: str
