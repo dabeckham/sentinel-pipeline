@@ -297,6 +297,12 @@ def _handle_message(body: bytes):
         if is_final:
             job.status = JobStatus.completed
             job.completed_at = datetime.now(timezone.utc)
+            # The session is autoflush=False, so the Detection rows added above
+            # are still pending. _classify_tracks queries Detection directly —
+            # without this flush it sees a truncated/empty detection set and
+            # mislabels every track as "stationary". Flush so classification
+            # reads the full, persisted path of each track.
+            db.flush()
             _classify_tracks(db, job_id)
             log.info("job_completed", job_id=job_id, detections=len(detections))
             # OC worker is now idle; record performance stats
