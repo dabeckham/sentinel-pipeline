@@ -35,10 +35,6 @@ log = structlog.get_logger()
 
 WORKER_ID = f"{socket.gethostname()}-oc-{os.getpid()}"
 
-# Best-shot tracking: (job_id, track_id) → best score seen so far
-# Score = abs(bbox_center_y / frame_height - 0.5): 0.0 = perfectly centered
-_best_shot_score: dict[tuple[int, int], float] = {}
-
 # Background thread pool for async MinIO uploads (best-shot only)
 _upload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="minio-upload")
 
@@ -68,11 +64,6 @@ def _upload_best_shot(bucket: str, name: str, frame):
         upload_snapshot(bucket, name, frame)
     except Exception:
         log.exception("oc_best_shot_upload_error", name=name)
-
-
-def _cleanup_best_shots(job_id: int):
-    for k in [k for k in _best_shot_score if k[0] == job_id]:
-        del _best_shot_score[k]
 
 
 def process_job(msg: dict, ch, method):
@@ -105,19 +96,40 @@ def process_job(msg: dict, ch, method):
         detections = process_job_video(video_path, motion_frames)
 
         # ── Best-shot selection ───────────────────────────────────────────────
+        # Per track, pick the most representative frame for the thumbnail: a
+        # large, fully-in-frame, confident view of the object. The old metric
+        # scored only vertical-centeredness, which is degenerate for a high-
+        # mounted camera — objects never reach mid-frame, so it picked whichever
+        # frame the object sat lowest, often jammed against an edge while
+        # entering/exiting. Reward area + confidence; penalise edge-touching.
         cap = cv2.VideoCapture(video_path)
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
         cap.release()
 
-        best_candidates: dict[int, dict] = {}   # track_id → best detection so far
+        _mx, _my = 0.02 * frame_w, 0.02 * frame_h        # 2% edge margin
+        _frame_area = float(frame_w * frame_h)
+
+        def _shot_quality(det) -> float:
+            b = det["bbox"]
+            x, y, w, h = b["x"], b["y"], b["w"], b["h"]
+            area_frac = (w * h) / _frame_area
+            touches = ((x <= _mx) + (y <= _my)
+                       + (x + w >= frame_w - _mx) + (y + h >= frame_h - _my))
+            in_frame = 1.0 if touches == 0 else 0.35 ** touches   # heavy edge penalty
+            conf = det.get("confidence", 0.0) or 0.0
+            return area_frac * in_frame * (0.5 + 0.5 * conf)
+
+        best_candidates: dict[int, dict] = {}   # track_id → best detection
+        _best_quality: dict[int, float] = {}
         for det in detections:
-            track_id = det["track_id"]
-            bbox_cy  = det["bbox"]["y"] + det["bbox"]["h"] / 2
-            score    = abs(bbox_cy / frame_h - 0.5)
-            key      = (job_id, track_id)
-            if score < _best_shot_score.get(key, 1.0):
-                _best_shot_score[key] = score
-                best_candidates[track_id] = det
+            if not det.get("bbox"):
+                continue
+            tid = det["track_id"]
+            q = _shot_quality(det)
+            if q > _best_quality.get(tid, -1.0):
+                _best_quality[tid] = q
+                best_candidates[tid] = det
 
         # Upload best-shot frames (sequential read, only needed frame indices).
         # Collect the futures so we can confirm they land before publishing done.
@@ -215,8 +227,6 @@ def process_job(msg: dict, ch, method):
             properties=pika.BasicProperties(
                 delivery_mode=2, content_type="application/json"),
         )
-
-        _cleanup_best_shots(job_id)
 
         log.info("oc_job_complete",
                  job_id=job_id, detections=len(detections), worker=WORKER_ID)
