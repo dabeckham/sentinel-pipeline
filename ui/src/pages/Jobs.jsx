@@ -117,6 +117,21 @@ function StatusBadge({ status, pulse, job }) {
   )
 }
 
+// When a job is first seen, anchor its "in status" timer to the moment it
+// ENTERED its current status (from the stage timestamps) — NOT created_at,
+// which makes a long-queued or reprocessed job show a huge bogus elapsed.
+function statusAnchorMs(job) {
+  const t = (s) => (s ? new Date(s).getTime() : null)
+  switch (job.status) {
+    case 'oc_processing': return t(job.oc_started_at)   ?? Date.now()
+    case 'md_complete':   return t(job.md_completed_at) ?? Date.now()
+    case 'md_processing': return t(job.md_started_at)   ?? Date.now()
+    case 'queued':
+    case 'pending':       return t(job.created_at)      ?? Date.now()
+    default:              return Date.now()   // paused etc.; done statuses don't render the timer
+  }
+}
+
 function ElapsedTimer({ sinceMs }) {
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
@@ -334,7 +349,7 @@ export default function Jobs() {
       for (const job of newItems) {
         const lastStatus = prevStatusRef.current[job.id]
         if (lastStatus === undefined) {
-          if (!(job.id in next)) next[job.id] = new Date(job.created_at).getTime()
+          if (!(job.id in next)) next[job.id] = statusAnchorMs(job)
         } else if (lastStatus !== job.status) {
           next[job.id] = Date.now()
         }
