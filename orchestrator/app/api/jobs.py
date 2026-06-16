@@ -1,8 +1,10 @@
 """Job endpoints."""
+import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,26 @@ _ACTIVE = {JobStatus.pending, JobStatus.queued,
 _PAUSEABLE = {JobStatus.pending, JobStatus.queued}
 # Terminal statuses — nothing can be done except remove
 _TERMINAL = {JobStatus.completed, JobStatus.failed, JobStatus.duplicate}
+
+
+@router.get("/{job_id}/video")
+def get_job_video(
+    job_id: int,
+    _: User = Depends(require_viewer),
+    db: Session = Depends(get_db),
+):
+    """Serve a job's source clip from the ingest mount for in-browser playback
+    and download. The UI fetches it with the JWT header into a blob, so native
+    <video> seeking works client-side. 410 once the source has been purged."""
+    job = db.query(Job).filter_by(id=job_id).first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.source_deleted:
+        raise HTTPException(status_code=410, detail="Source video has been purged")
+    path = job.file_path
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Source video not on disk")
+    return FileResponse(path, media_type="video/mp4", filename=os.path.basename(path))
 
 
 def _job_to_response(job: Job, track_count: int | None = None) -> JobResponse:
