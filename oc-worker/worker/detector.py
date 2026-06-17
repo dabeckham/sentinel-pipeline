@@ -349,4 +349,94 @@ def process_job_video(
              elapsed_s=round(elapsed, 2),
              fps=round(tracked / elapsed, 1) if elapsed > 0 else 0)
 
-    return all_detections
+    return _merge_fragments(all_detections, s)
+
+
+def _iou(a: dict, b: dict) -> float:
+    """IoU of two {x, y, w, h} boxes."""
+    ax2, ay2 = a["x"] + a["w"], a["y"] + a["h"]
+    bx2, by2 = b["x"] + b["w"], b["y"] + b["h"]
+    ix1, iy1 = max(a["x"], b["x"]), max(a["y"], b["y"])
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_fragments(detections: list[dict], s) -> list[dict]:
+    """Stitch occlusion-split fragments back into one track (issue #59).
+
+    Contiguous tracking keeps a moving object whole, but a stationary object
+    still loses its id when a passing vehicle occludes it and re-ids as a new
+    short track. Re-attach: for each later track B, find the earlier same-class
+    track A whose LAST box best overlaps (IoU) B's FIRST box across a bounded
+    frame gap, and merge them (union-find, so chains collapse). The merged set
+    takes the earliest-starting member's id. The IoU gate keeps it conservative —
+    two distinct vehicles would have to occupy nearly the same pixels across the
+    gap, which inside one short clip means it is the same physical object.
+    """
+    if not s.oc_merge_fragments or not detections:
+        return detections
+
+    by_tid: dict[int, list[dict]] = {}
+    for d in detections:
+        by_tid.setdefault(d["track_id"], []).append(d)
+    if len(by_tid) < 2:
+        return detections
+
+    tracks = []
+    for tid, dts in by_tid.items():
+        dts.sort(key=lambda d: d["frame_index"])
+        cls = max({d["class_label"] for d in dts},
+                  key=lambda c: sum(1 for d in dts if d["class_label"] == c))
+        tracks.append({
+            "tid": tid, "cls": cls,
+            "first": dts[0]["frame_index"], "last": dts[-1]["frame_index"],
+            "first_bbox": dts[0]["bbox"], "last_bbox": dts[-1]["bbox"],
+        })
+    # Order by start (then end) so "earlier" tracks precede candidates.
+    tracks.sort(key=lambda t: (t["first"], t["last"]))
+
+    parent = {t["tid"]: t["tid"] for t in tracks}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for j, B in enumerate(tracks):
+        best_a, best_iou = None, s.oc_merge_min_iou
+        for A in tracks[:j]:
+            if A["cls"] != B["cls"]:
+                continue
+            gap = B["first"] - A["last"]          # >0 only when A ends before B starts
+            if gap < 0 or gap > s.oc_merge_max_gap:
+                continue
+            iou = _iou(A["last_bbox"], B["first_bbox"])
+            if iou >= best_iou:
+                best_iou, best_a = iou, A
+        if best_a is not None:
+            parent[find(B["tid"])] = find(best_a["tid"])
+
+    # Canonical id per merged set = earliest-starting member (tie: smallest id).
+    canon: dict[int, tuple] = {}
+    for t in tracks:
+        r = find(t["tid"])
+        key = (t["first"], t["tid"])
+        if r not in canon or key < canon[r][0]:
+            canon[r] = (key, t["tid"])
+    remap = {t["tid"]: canon[find(t["tid"])][1] for t in tracks}
+
+    merged = sum(1 for tid, to in remap.items() if tid != to)
+    if merged:
+        for d in detections:
+            d["track_id"] = remap[d["track_id"]]
+        log.info("oc_fragments_merged",
+                 merged_fragments=merged,
+                 tracks_before=len(tracks),
+                 tracks_after=len(set(remap.values())))
+    return detections
