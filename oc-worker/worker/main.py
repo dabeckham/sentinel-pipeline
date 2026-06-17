@@ -29,14 +29,23 @@ import structlog
 
 from worker.config import get_settings
 from worker.detector import process_job_video, get_model
-from worker.minio_client import upload_snapshot
+from worker.minio_client import upload_snapshot, upload_jpeg
 
 log = structlog.get_logger()
 
 WORKER_ID = f"{socket.gethostname()}-oc-{os.getpid()}"
 
-# Background thread pool for async MinIO uploads (best-shot only)
-_upload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="minio-upload")
+# Background thread pool for async MinIO uploads (best-shot + per-detection frames)
+_upload_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="minio-upload")
+
+# Per-detection scrub frames: for a MOVING object we save up to this many full
+# frames (evenly sampled across its detections) so the UI slider scrubs real
+# frames of the object — each auto-zooming into its bbox — instead of sliding a
+# box over one still. Stationary tracks don't move, so one best-shot is enough.
+PER_TRACK_SNAP_CAP = 24
+# Mirror the orchestrator's _classify_tracks default (settings.tracker_min_displacement)
+# so "moving" here matches the track_type the user sees.
+MOVING_THRESHOLD = 0.3
 
 
 def _connect(settings) -> tuple[pika.BlockingConnection, any]:
@@ -59,11 +68,42 @@ def _connect(settings) -> tuple[pika.BlockingConnection, any]:
 
 
 def _upload_best_shot(bucket: str, name: str, frame):
-    """Fire-and-forget MinIO upload — runs in background thread pool."""
+    """Fire-and-forget MinIO upload of a raw frame — runs in background pool."""
     try:
         upload_snapshot(bucket, name, frame)
     except Exception:
         log.exception("oc_best_shot_upload_error", name=name)
+
+
+def _upload_jpeg(bucket: str, name: str, data: bytes):
+    """Fire-and-forget MinIO upload of pre-encoded JPEG bytes."""
+    try:
+        upload_jpeg(bucket, name, data)
+    except Exception:
+        log.exception("oc_snapshot_upload_error", name=name)
+
+
+def _is_moving(dts: list[dict]) -> bool:
+    """Same rule as the orchestrator's _classify_tracks: normalized straight-line
+    displacement between the first and last detection's centroid (÷ average bbox
+    width) ≥ threshold. `dts` must be in ascending frame order."""
+    if len(dts) < 2:
+        return False
+    fb, lb = dts[0]["bbox"], dts[-1]["bbox"]
+    fcx, fcy = fb["x"] + fb["w"] / 2.0, fb["y"] + fb["h"] / 2.0
+    lcx, lcy = lb["x"] + lb["w"] / 2.0, lb["y"] + lb["h"] / 2.0
+    disp = ((lcx - fcx) ** 2 + (lcy - fcy) ** 2) ** 0.5
+    avg_w = (fb["w"] + lb["w"]) / 2.0
+    return (disp / avg_w if avg_w > 0 else 0.0) >= MOVING_THRESHOLD
+
+
+def _sample_evenly(items: list, cap: int) -> list:
+    """Up to `cap` items evenly spaced across the list (always incl. first/last)."""
+    n = len(items)
+    if n <= cap:
+        return items
+    idxs = sorted({round(i * (n - 1) / (cap - 1)) for i in range(cap)})
+    return [items[i] for i in idxs]
 
 
 def process_job(msg: dict, ch, method):
@@ -141,33 +181,55 @@ def process_job(msg: dict, ch, method):
                 _best_quality[tid] = q
                 best_candidates[tid] = det
 
-        # Upload best-shot frames (sequential read, only needed frame indices).
-        # Collect the futures so we can confirm they land before publishing done.
+        # ── Snapshot frames to save ───────────────────────────────────────────
+        # best-shot per track + per-detection scrub frames for MOVING tracks.
+        # Build frame_index → [object_name, …] so a single sequential read
+        # uploads every needed frame; encode each frame to JPEG once and reuse
+        # the bytes across names (a full-res 11MP frame is ~34MB raw — queueing
+        # one copy per detection would blow the worker's memory).
+        dets_by_track: dict[int, list[dict]] = {}
+        for det in detections:
+            if det.get("bbox"):
+                dets_by_track.setdefault(det["track_id"], []).append(det)
+
+        frame_saves: dict[int, list[str]] = {}
+        # Several tracks can share their best frame (multiple objects most-centred
+        # on the same frame) — map to a LIST so a collision doesn't drop a best-shot.
+        for tid, det in best_candidates.items():
+            frame_saves.setdefault(det["frame_index"], []).append(
+                f"{job_id}/track_{tid:06d}_best.jpg")
+
+        # Per-detection scrub frames (moving tracks only); annotate crop_path on
+        # the detection so the result consumer persists it and the UI scrubs the
+        # real frames. The best detection reuses its already-saved best-shot frame.
+        for tid, dts in dets_by_track.items():
+            if not _is_moving(dts):
+                continue
+            for det in _sample_evenly(dts, PER_TRACK_SNAP_CAP):
+                if best_candidates.get(tid) is det:
+                    det["crop_path"] = f"{job_id}/track_{tid:06d}_best.jpg"
+                else:
+                    name = f"{job_id}/track_{tid:06d}_det_{det['frame_index']:06d}.jpg"
+                    det["crop_path"] = name
+                    frame_saves.setdefault(det["frame_index"], []).append(name)
+
         upload_futures = []
-        if best_candidates:
-            # Several tracks can share their best frame_index (multiple objects
-            # most-centered on the same frame).  Map each frame to a LIST of
-            # track_ids so a collision doesn't silently drop a track's best-shot
-            # — the bug that left DB-referenced snapshots missing from MinIO.
-            needed_frames: dict[int, list[int]] = {}
-            for track_id, det in best_candidates.items():
-                needed_frames.setdefault(det["frame_index"], []).append(track_id)
-            max_fi = max(needed_frames)
+        if frame_saves:
+            max_fi = max(frame_saves)
             cap = cv2.VideoCapture(video_path)
             current = 0
             while current <= max_fi:
                 ok, frame = cap.read()
                 if not ok:
                     break
-                if current in needed_frames:
-                    for tid in needed_frames[current]:
-                        name = f"{job_id}/track_{tid:06d}_best.jpg"
-                        upload_futures.append(_upload_pool.submit(
-                            _upload_best_shot,
-                            settings.minio_bucket_snapshots,
-                            name,
-                            frame.copy(),
-                        ))
+                names = frame_saves.get(current)
+                if names:
+                    enc_ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    if enc_ok:
+                        data = buf.tobytes()
+                        for name in names:
+                            upload_futures.append(_upload_pool.submit(
+                                _upload_jpeg, settings.minio_bucket_snapshots, name, data))
                 current += 1
             cap.release()
 

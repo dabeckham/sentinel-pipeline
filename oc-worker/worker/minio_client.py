@@ -24,7 +24,13 @@ def upload_snapshot(bucket: str, object_name: str, image: np.ndarray) -> str:
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise RuntimeError("Failed to encode snapshot as JPEG")
-    data = buf.tobytes()
+    return upload_jpeg(bucket, object_name, buf.tobytes())
+
+
+def upload_jpeg(bucket: str, object_name: str, data: bytes) -> str:
+    """Upload pre-encoded JPEG bytes. Lets the caller encode a full-res frame
+    once and reuse the bytes for several object names without holding the raw
+    11MP array in the upload queue (memory blows up with one copy per detection)."""
     client = get_client()
     client.put_object(
         bucket,

@@ -368,7 +368,7 @@ def _handle_message(body: bytes):
                 class_label=class_label,
                 confidence=confidence,
                 bbox=bbox,
-                crop_path=None,
+                crop_path=det.get("crop_path"),
             ))
 
         if is_final:
