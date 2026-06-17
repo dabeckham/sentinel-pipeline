@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { wsUrl, api } from '../api.js'
 import MetricsBar from './MetricsBar.jsx'
 import PipelineStatus from './PipelineStatus.jsx'
+import StoragePanel from './StoragePanel.jsx'
 import { WsContext } from '../WsContext.jsx'
 
 const NAV = [
@@ -143,6 +144,9 @@ export default function Layout() {
 
         {/* Real-time queue depths + worker states */}
         <PipelineStatus />
+
+        {/* Admin: Postgres + MinIO storage usage */}
+        <StoragePanel />
 
         <div className="p-4 border-t border-slate-700 space-y-1">
           {/* Watcher toggle */}
