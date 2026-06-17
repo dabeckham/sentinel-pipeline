@@ -150,17 +150,17 @@ function BboxOverlay({ bbox, imgSize, viewerEl, zoom = 1, transformState = null 
 }
 
 // ── Track card ────────────────────────────────────────────────────────────────
-function TrackCard({ track, onClick }) {
+function TrackCard({ track, zoom = true, onClick }) {
   const duration = fmtDuration(track.started_at, track.ended_at)
   const time = fmtTime(track.started_at)
   const [thumbSize, setThumbSize] = useState(null)
   const thumbRef = useRef(null)
 
   // Compute zoom transform to center the bbox in the thumbnail.
-  // Returns { css, tx, ty, z } or null.
+  // Returns { css, tx, ty, z } or null. Skipped when card auto-zoom is off.
   const thumbMemo = useMemo(() => {
     const bbox = track.snapshot_bbox
-    if (!bbox || !thumbSize || !thumbRef.current) return null
+    if (!zoom || !bbox || !thumbSize || !thumbRef.current) return null
     const cw = thumbRef.current.clientWidth
     const ch = thumbRef.current.clientHeight
     const { w: iw, h: ih } = thumbSize
@@ -175,7 +175,7 @@ function TrackCard({ track, onClick }) {
     const tx = (cw / 2 - bcx) * z
     const ty = (ch / 2 - bcy) * z
     return { css: `translate(${tx}px, ${ty}px) scale(${z})`, tx, ty, z }
-  }, [track.snapshot_bbox, thumbSize])
+  }, [track.snapshot_bbox, thumbSize, zoom])
 
   return (
     <button
@@ -976,6 +976,11 @@ export default function Tracks() {
   // Load camera list once
   useEffect(() => { api.cameras().then(setCameraList).catch(() => {}) }, [])
 
+  // Card auto-zoom — zoom each card into the detected object's best-shot bbox.
+  // On by default; persisted. Turn off to show the whole frame uncropped.
+  const [cardZoom, setCardZoom] = useState(() => localStorage.getItem('sentinel_cardZoom') !== 'false')
+  const toggleCardZoom = v => { setCardZoom(v); localStorage.setItem('sentinel_cardZoom', v ? 'true' : 'false') }
+
   // Auto-refresh when jobs complete — off by default, user can enable
   const [autoRefresh, setAutoRefresh] = useState(false)
   const wsDebounce = useRef(null)
@@ -1113,6 +1118,13 @@ export default function Tracks() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none px-2 py-1.5 rounded-lg border border-slate-700 hover:border-slate-600"
+            title="Zoom each card into the detected object (off shows the whole frame)">
+            <input type="checkbox" checked={cardZoom}
+              onChange={e => toggleCardZoom(e.target.checked)}
+              className="accent-brand w-3 h-3" />
+            Auto-zoom
+          </label>
           <button
             onClick={() => setAutoRefresh(v => !v)}
             title={autoRefresh ? 'Auto-refresh on — click to pause' : 'Auto-refresh paused — click to enable'}
@@ -1144,7 +1156,7 @@ export default function Tracks() {
       {/* Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
         {items.map(track => (
-          <TrackCard key={track.id} track={track} onClick={t => setSelectedId(t.id)} />
+          <TrackCard key={track.id} track={track} zoom={cardZoom} onClick={t => setSelectedId(t.id)} />
         ))}
 
         {/* Skeleton cards while loading first page */}
