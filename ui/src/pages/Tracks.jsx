@@ -271,6 +271,19 @@ function TrackDrawer({ trackId, onClose }) {
     api.track(trackId).then(setDetail).finally(() => setLoading(false))
   }, [trackId])
 
+  // Open on the BEST detection (the frame the best-shot shows), not the first.
+  // The still is the best-shot image, so auto-zoom/overlay must target the bbox
+  // that matches it (detail.snapshot_bbox) — opening on detIdx 0 zoomed to the
+  // first position, where the object isn't in the best-shot.
+  useEffect(() => {
+    const sb = detail?.snapshot_bbox
+    const dl = detail?.detections ?? []
+    if (!sb || !dl.length) return
+    const idx = dl.findIndex(d => d.bbox &&
+      d.bbox.x === sb.x && d.bbox.y === sb.y && d.bbox.w === sb.w && d.bbox.h === sb.h)
+    if (idx >= 0) setDetIdx(idx)
+  }, [detail])
+
   useEffect(() => {
     if (!playing || !detail?.detections?.length) return
     playRef.current = setInterval(() => {
