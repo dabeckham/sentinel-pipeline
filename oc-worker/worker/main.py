@@ -111,23 +111,24 @@ def process_job(msg: dict, ch, method):
         _cx0, _cy0 = frame_w / 2.0, frame_h / 2.0
 
         def _shot_quality(det) -> float:
-            # Prefer the frame where the object is best framed: fully inside the
-            # frame AND as close to centre as possible. For left-right traffic on
-            # a high-mounted camera the vertical offset is ~constant (objects never
-            # reach mid-height), so horizontal centring naturally dominates — the
-            # frame where the car sits centred in the driveway. Confidence breaks
-            # ties. (Replaces the old area-led metric that drifted to frame edges.)
+            # Pick the frame where the object is best framed: fully in-frame and as
+            # close to centre as possible. Vehicles cross the frame HORIZONTALLY and
+            # never reach vertical centre on a high-mounted camera, so the vertical
+            # offset is ~constant and must be down-weighted — otherwise it dominates
+            # the distance and the pick drifts off the horizontal centre. NO
+            # confidence term: every kept detection is already above threshold, and
+            # weighting by confidence let a slightly-more-confident off-centre frame
+            # beat the centred one (the reported job-22467 mis-pick).
             b = det["bbox"]
             x, y, w, h = b["x"], b["y"], b["w"], b["h"]
             cx, cy = x + w / 2.0, y + h / 2.0
-            ndx = (cx - _cx0) / _cx0          # 0 at centre, ±1 at a left/right edge
-            ndy = (cy - _cy0) / _cy0
-            centred = 1.0 - min(1.0, (ndx * ndx + ndy * ndy) ** 0.5 / 1.41421356)
+            ndx = (cx - _cx0) / _cx0                 # 0 at centre, ±1 at a left/right edge
+            ndy = (cy - _cy0) / _cy0 * 0.35          # vertical weighted ~1/3 of horizontal
+            centred = 1.0 - min(1.0, (ndx * ndx + ndy * ndy) ** 0.5)
             touches = ((x <= _mx) + (y <= _my)
                        + (x + w >= frame_w - _mx) + (y + h >= frame_h - _my))
             in_frame = 1.0 if touches == 0 else 0.4 ** touches   # heavy edge penalty
-            conf = det.get("confidence", 0.0) or 0.0
-            return in_frame * centred * (0.7 + 0.3 * conf)
+            return in_frame * centred
 
         best_candidates: dict[int, dict] = {}   # track_id → best detection
         _best_quality: dict[int, float] = {}
