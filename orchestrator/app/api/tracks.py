@@ -35,6 +35,7 @@ def _track_to_response(track: Track, camera_name: str | None, detection_count: i
         camera_name=camera_name,
         detection_count=detection_count,
         snapshot_bbox=snapshot_bbox,
+        track_type=track.track_type,
     )
 
 
