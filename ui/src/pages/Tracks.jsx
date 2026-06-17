@@ -331,9 +331,6 @@ function TrackDrawer({ trackId, onClose }) {
   const [videoErrMsg, setVideoErrMsg] = useState('')
   const prepCancelRef = useRef(false)
   const retriedRef = useRef(false)   // one automatic lower-rung retry on decode error
-  const videoRef = useRef(null)
-  const [videoTime, setVideoTime] = useState(0)
-  const seekedOnLoadRef = useRef(false)   // seek to first detection once per load
 
   const authToken = () => localStorage.getItem('sentinel_token') || ''
 
@@ -411,60 +408,7 @@ function TrackDrawer({ trackId, onClose }) {
     prepCancelRef.current = true   // stop any in-flight readiness poll
     setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
     retriedRef.current = false
-    setVideoTime(0); seekedOnLoadRef.current = false
   }, [trackId])
-
-  // ── Video-timeline scrub ──────────────────────────────────────────────────
-  // Each detection carries timestamp_ms (its moment in the clip), so we seek the
-  // H.264 rendition straight to that time and overlay the bbox — moving objects
-  // are scrubbed on the real video instead of needing a per-detection still.
-  // Old jobs (no timestamp_ms) fall back to the still scrubber.
-  const hasTimestamps = dets.some(d => d.timestamp_ms != null)
-
-  // Detection nearest the current playhead → its bbox tracks the object as the
-  // clip plays. Hidden when the playhead is between active detection spans.
-  const NEAR_WINDOW_S = 1.0
-  const videoActiveIdx = useMemo(() => {
-    let idx = -1, bestDiff = Infinity
-    dets.forEach((d, i) => {
-      if (d.timestamp_ms == null) return
-      const diff = Math.abs(d.timestamp_ms / 1000 - videoTime)
-      if (diff < bestDiff) { bestDiff = diff; idx = i }
-    })
-    return bestDiff <= NEAR_WINDOW_S ? idx : -1
-  }, [dets, videoTime])
-  const videoActiveDet = videoActiveIdx >= 0 ? dets[videoActiveIdx] : null
-
-  // Badge / highlight source: the video-active detection while the clip is up,
-  // else the still's selected detection.
-  const badgeIdx = videoMode ? videoActiveIdx : detIdx
-  const badgeDet = badgeIdx >= 0 ? dets[badgeIdx] : null
-
-  const seekVideoTo = det => {
-    const v = videoRef.current
-    if (v && det?.timestamp_ms != null) {
-      try { v.pause(); v.currentTime = det.timestamp_ms / 1000 } catch { /* not ready yet */ }
-    }
-  }
-  const goToDet = i => {
-    setPlaying(false)
-    setDetIdx(i)
-    if (videoMode) seekVideoTo(dets[i])
-  }
-  const stepDet = delta => {
-    const from = badgeIdx >= 0 ? badgeIdx : detIdx
-    goToDet(Math.min(dets.length - 1, Math.max(0, from + delta)))
-  }
-
-  // Open the clip on the first detection's frame so it starts on the first bbox
-  // and the frame that matches it (not frame 0 / a black lead-in).
-  const onVideoLoaded = () => {
-    const v = videoRef.current
-    if (!v || seekedOnLoadRef.current) return
-    seekedOnLoadRef.current = true
-    const first = dets.find(d => d.timestamp_ms != null)
-    if (first) seekVideoTo(first)
-  }
 
   useEffect(() => {
     if (!autoZoom) return
@@ -556,18 +500,9 @@ function TrackDrawer({ trackId, onClose }) {
                   onDoubleClick={handleDoubleClick}
                 >
                   {videoMode && videoUrl && (
-                    <video ref={videoRef} src={videoUrl} controls muted playsInline
+                    <video src={videoUrl} controls autoPlay muted playsInline
                       onError={onVideoError}
-                      onLoadedMetadata={onVideoLoaded}
-                      onTimeUpdate={() => setVideoTime(videoRef.current?.currentTime ?? 0)}
-                      onSeeked={() => setVideoTime(videoRef.current?.currentTime ?? 0)}
                       className="absolute inset-0 w-full h-full object-contain bg-black z-10" />
-                  )}
-                  {/* Bbox overlay tracking the object on the video timeline */}
-                  {videoMode && videoUrl && showBbox && videoActiveDet && imgSize && (
-                    <div className="absolute inset-0 z-20 pointer-events-none">
-                      <BboxOverlay bbox={videoActiveDet.bbox} imgSize={imgSize} viewerEl={viewerRef.current} zoom={1} />
-                    </div>
                   )}
                   <div style={{
                     position: 'absolute', inset: 0,
@@ -581,14 +516,12 @@ function TrackDrawer({ trackId, onClose }) {
                   </div>
                   {dets.length > 0 && (
                     <div className="absolute top-2 right-2 bg-black/70 text-white text-xs font-mono px-2 py-1 rounded pointer-events-none">
-                      {(badgeIdx >= 0 ? badgeIdx : detIdx) + 1} / {dets.length}
+                      {detIdx + 1} / {dets.length}
                     </div>
                   )}
-                  {(badgeDet || videoMode) && (
+                  {curDet && (
                     <div className="absolute top-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded pointer-events-none">
-                      {badgeDet
-                        ? <>f{badgeDet.frame_index} · {fmtConfidence(badgeDet.confidence)}</>
-                        : `${videoTime.toFixed(1)}s`}
+                      f{curDet.frame_index} · {fmtConfidence(curDet.confidence)}
                     </div>
                   )}
                   {zoom === 1 && (
@@ -615,20 +548,10 @@ function TrackDrawer({ trackId, onClose }) {
                       ◼ Show still
                     </button>
                   )}
-                  {videoMode && hasTimestamps && dets.length > 1 && (
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button onClick={() => stepDet(-1)} title="previous detection"
-                        className="w-7 h-7 flex items-center justify-center rounded-md bg-slate-700 hover:bg-slate-600 text-white text-sm">‹</button>
-                      <button onClick={() => stepDet(1)} title="next detection"
-                        className="w-7 h-7 flex items-center justify-center rounded-md bg-slate-700 hover:bg-slate-600 text-white text-sm">›</button>
-                    </div>
-                  )}
-                  {dets.length > 1 && (!videoMode || hasTimestamps) && (
-                    <input type="range" min={0} max={dets.length - 1}
-                      value={videoMode ? (videoActiveIdx >= 0 ? videoActiveIdx : detIdx) : detIdx}
-                      onChange={e => goToDet(Number(e.target.value))}
-                      className="flex-1 accent-brand"
-                      title={videoMode ? 'scrub detections (seeks the video)' : 'scrub detections (moves the bbox on the still)'} />
+                  {!videoMode && dets.length > 1 && (
+                    <input type="range" min={0} max={dets.length - 1} value={detIdx}
+                      onChange={e => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
+                      className="flex-1 accent-brand" title="scrub detections (moves the bbox on the still)" />
                   )}
                   {videoErr && <span className="text-xs text-red-400">playback failed{videoErrMsg ? ` — ${videoErrMsg}` : ''} — try Download</span>}
                 </div>
@@ -660,8 +583,8 @@ function TrackDrawer({ trackId, onClose }) {
                       <div className="rounded-lg border border-slate-700 divide-y divide-slate-700/50 overflow-hidden">
                         {dets.map((d, i) => (
                           <button key={d.id}
-                            onClick={() => goToDet(i)}
-                            className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${i === badgeIdx ? 'bg-brand/20 border-l-2 border-brand' : 'hover:bg-slate-800/60'}`}
+                            onClick={() => { setPlaying(false); setVideoMode(false); setDetIdx(i) }}
+                            className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : 'hover:bg-slate-800/60'}`}
                           >
                             <span className="text-slate-500 font-mono w-14 shrink-0">f {d.frame_index}</span>
                             {d.timestamp_ms != null && (
