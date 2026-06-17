@@ -277,9 +277,11 @@ function TrackDrawer({ trackId, onClose }) {
   // first position, where the object isn't in the best-shot.
   useEffect(() => {
     const sb = detail?.snapshot_bbox
-    const dl = detail?.detections ?? []
-    if (!sb || !dl.length) return
-    const idx = dl.findIndex(d => d.bbox &&
+    const all = detail?.detections ?? []
+    if (!sb || !all.length) return
+    // Index into the same list the slider scrubs (crop'd frames when present).
+    const list = all.some(d => d.crop_path) ? all.filter(d => d.crop_path) : all
+    const idx = list.findIndex(d => d.bbox &&
       d.bbox.x === sb.x && d.bbox.y === sb.y && d.bbox.w === sb.w && d.bbox.h === sb.h)
     if (idx >= 0) setDetIdx(idx)
   }, [detail])
@@ -301,9 +303,14 @@ function TrackDrawer({ trackId, onClose }) {
     return () => window.removeEventListener('keydown', h)
   }, [onClose])
 
-  const dets = detail?.detections ?? []
+  const allDets = detail?.detections ?? []
+  const hasCrops = allDets.some(d => d.crop_path)
+  // When per-detection frames exist (moving objects), scrub through ONLY those
+  // saved frames so every slider stop shows the object where it actually is —
+  // each frame auto-zooms into its bbox. Otherwise scrub all detections over the
+  // single best-shot still (the box moves but the frame doesn't — old jobs).
+  const dets = hasCrops ? allDets.filter(d => d.crop_path) : allDets
   const curDet = dets[detIdx] ?? null
-  const hasCrops = dets.some(d => d.crop_path)
   const currentSnapshotPath = hasCrops
     ? (curDet?.crop_path ?? detail?.snapshot_path)
     : detail?.snapshot_path
@@ -551,7 +558,8 @@ function TrackDrawer({ trackId, onClose }) {
                   {!videoMode && dets.length > 1 && (
                     <input type="range" min={0} max={dets.length - 1} value={detIdx}
                       onChange={e => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
-                      className="flex-1 accent-brand" title="scrub detections (moves the bbox on the still)" />
+                      className="flex-1 accent-brand"
+                      title={hasCrops ? 'scrub the saved frames of this object' : 'scrub detections (moves the bbox on the still)'} />
                   )}
                   {videoErr && <span className="text-xs text-red-400">playback failed{videoErrMsg ? ` — ${videoErrMsg}` : ''} — try Download</span>}
                 </div>
@@ -562,7 +570,7 @@ function TrackDrawer({ trackId, onClose }) {
                       { label: 'Class',      value: <span className={`text-xs px-2 py-0.5 rounded-full border capitalize ${classColor(detail.class_label)}`}>{detail.class_label ?? '—'}</span> },
                       { label: 'Confidence', value: fmtConfidence(detail.confidence_max) },
                       { label: 'Camera',     value: detail.camera_name ?? '—' },
-                      { label: 'Detections', value: dets.length || detail.detection_count || '—' },
+                      { label: 'Detections', value: detail.detection_count || allDets.length || '—' },
                       { label: 'Started',    value: startTime ?? '—' },
                       { label: 'Ended',      value: endTime ?? '—' },
                       { label: 'Duration',   value: duration ?? '—' },
