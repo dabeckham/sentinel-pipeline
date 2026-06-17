@@ -11,6 +11,9 @@ class Detection(Base):
     track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"), nullable=False, index=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
     frame_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Offset of this frame into the clip, in milliseconds (frame_index / fps).
+    # Used by the UI to seek the playback rendition straight to the detection.
+    timestamp_ms: Mapped[int] = mapped_column(Integer, nullable=True)
     class_label: Mapped[str] = mapped_column(String(128), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=True)
     bbox: Mapped[dict] = mapped_column(JSON, nullable=True)   # {x, y, w, h}

@@ -35,6 +35,7 @@ class TrackListResponse(BaseModel):
 class DetectionInTrack(BaseModel):
     id: int
     frame_index: int
+    timestamp_ms: Optional[int] = None   # frame offset into the clip (ms) — for video-timeline scrub
     class_label: Optional[str] = None
     confidence: Optional[float] = None
     bbox: Optional[dict] = None

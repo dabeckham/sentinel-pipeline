@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     md_image: str = "sentinel-pipeline-md-worker:latest"
     oc_gpu_ids: str = "1"                  # comma-separated physical GPU ids for OC workers
 
+    # ── Transcode worker (on-demand playback renditions) ────────────────────
+    # A single always-on NVENC worker handles browser-friendly H.264 renditions.
+    # Short, infrequent jobs — no demand scaling; the agent just keeps one alive.
+    transcode_enabled: bool = True
+    transcode_image: str = "sentinel-transcode-worker:latest"
+    transcode_gpu_id: str = "1"            # GPU0 is Frigate; encode on GPU1
+
     # ── Broker (for demand signal: queue depths) ────────────────────────────
     rabbitmq_user: str = "sentinel"
     rabbitmq_password: str = "sentinel"

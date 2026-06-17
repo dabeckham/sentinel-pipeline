@@ -67,3 +67,14 @@ def purge_queue(queue: str) -> int:
     except Exception as exc:
         log.error("amqp_purge_failed", queue=queue, error=str(exc))
         return 0
+
+
+def declare_durable(queue: str) -> None:
+    """Idempotently declare a durable queue so publishes aren't silently dropped
+    when no consumer has declared it yet. Must match the consumer's durable=true."""
+    settings = get_settings()
+    conn = pika.BlockingConnection(settings.rabbitmq_params())
+    try:
+        conn.channel().queue_declare(queue=queue, durable=True)
+    finally:
+        conn.close()

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     queue_ingest: str = "ingest"
     queue_motion_results: str = "motion_results"
     queue_oc_results: str = "oc_results"
+    # On-demand playback transcodes (source HEVC → adaptive H.264 rendition).
+    queue_transcode: str = "transcode_jobs"
 
     # PostgreSQL
     postgres_host: str = "postgres"

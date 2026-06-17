@@ -65,12 +65,15 @@ def get_current_user(
             synthetic.is_active = True
             return synthetic
 
-    # --- JWT bearer ---
-    if not credentials:
+    # --- JWT: Authorization header, or ?token= query param ---
+    # Native <video>/<a download> elements can't set an Authorization header, so
+    # media endpoints (playback/video) pass the same JWT as a ?token= query param.
+    raw_token = credentials.credentials if credentials else request.query_params.get("token")
+    if not raw_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     try:
-        payload = decode_token(credentials.credentials)
+        payload = decode_token(raw_token)
         username: str = payload.get("sub")
         if not username:
             raise JWTError("no sub")

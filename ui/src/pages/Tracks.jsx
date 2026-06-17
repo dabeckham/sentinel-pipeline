@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../api.js'
 import { useWsEvent } from '../WsContext.jsx'
+import { getPlaybackProfile } from '../lib/playbackProfile.js'
 
 // ── Class colour map ──────────────────────────────────────────────────────────
 const CLASS_COLORS = {
@@ -149,17 +150,17 @@ function BboxOverlay({ bbox, imgSize, viewerEl, zoom = 1, transformState = null 
 }
 
 // ── Track card ────────────────────────────────────────────────────────────────
-function TrackCard({ track, onClick }) {
+function TrackCard({ track, zoom = true, onClick }) {
   const duration = fmtDuration(track.started_at, track.ended_at)
   const time = fmtTime(track.started_at)
   const [thumbSize, setThumbSize] = useState(null)
   const thumbRef = useRef(null)
 
   // Compute zoom transform to center the bbox in the thumbnail.
-  // Returns { css, tx, ty, z } or null.
+  // Returns { css, tx, ty, z } or null. Skipped when card auto-zoom is off.
   const thumbMemo = useMemo(() => {
     const bbox = track.snapshot_bbox
-    if (!bbox || !thumbSize || !thumbRef.current) return null
+    if (!zoom || !bbox || !thumbSize || !thumbRef.current) return null
     const cw = thumbRef.current.clientWidth
     const ch = thumbRef.current.clientHeight
     const { w: iw, h: ih } = thumbSize
@@ -174,7 +175,7 @@ function TrackCard({ track, onClick }) {
     const tx = (cw / 2 - bcx) * z
     const ty = (ch / 2 - bcy) * z
     return { css: `translate(${tx}px, ${ty}px) scale(${z})`, tx, ty, z }
-  }, [track.snapshot_bbox, thumbSize])
+  }, [track.snapshot_bbox, thumbSize, zoom])
 
   return (
     <button
@@ -270,6 +271,19 @@ function TrackDrawer({ trackId, onClose }) {
     api.track(trackId).then(setDetail).finally(() => setLoading(false))
   }, [trackId])
 
+  // Open on the BEST detection (the frame the best-shot shows), not the first.
+  // The still is the best-shot image, so auto-zoom/overlay must target the bbox
+  // that matches it (detail.snapshot_bbox) — opening on detIdx 0 zoomed to the
+  // first position, where the object isn't in the best-shot.
+  useEffect(() => {
+    const sb = detail?.snapshot_bbox
+    const dl = detail?.detections ?? []
+    if (!sb || !dl.length) return
+    const idx = dl.findIndex(d => d.bbox &&
+      d.bbox.x === sb.x && d.bbox.y === sb.y && d.bbox.w === sb.w && d.bbox.h === sb.h)
+    if (idx >= 0) setDetIdx(idx)
+  }, [detail])
+
   useEffect(() => {
     if (!playing || !detail?.detections?.length) return
     playRef.current = setInterval(() => {
@@ -313,47 +327,88 @@ function TrackDrawer({ trackId, onClose }) {
   const [videoUrl, setVideoUrl]       = useState(null)
   const [videoLoading, setVideoLoading] = useState(false)
   const [videoErr, setVideoErr]       = useState(false)
-  const videoUrlRef = useRef(null)
+  const [videoPrep, setVideoPrep]     = useState('')   // status while transcoding
+  const [videoErrMsg, setVideoErrMsg] = useState('')
+  const prepCancelRef = useRef(false)
+  const retriedRef = useRef(false)   // one automatic lower-rung retry on decode error
 
-  // Fetch the clip with the JWT header into a blob (native <video> seeks the
-  // local blob; same blob backs the download button). Cached per open.
-  const ensureVideo = useCallback(async () => {
-    if (videoUrlRef.current) return videoUrlRef.current
+  const authToken = () => localStorage.getItem('sentinel_token') || ''
+
+  // Adaptive playback. The source is 11MP HEVC (browsers can't decode it), so we
+  // profile this browser once (max decodable H.264 height + bandwidth) and ask
+  // the backend for a rendition at that height. We POLL a cheap readiness probe
+  // (small JSON) while the GPU transcodes, then point the native <video> at the
+  // streaming URL — the browser fetches it in retryable range chunks, which is
+  // robust over a lossy LAN link (a single big blob fetch was not). The native
+  // element can't send an auth header, so the JWT rides as a ?token= param.
+  const preparePlayback = useCallback(async (forceH = null) => {
     if (!detail?.job_id) return null
-    setVideoLoading(true); setVideoErr(false)
+    setVideoLoading(true); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
+    prepCancelRef.current = false
     try {
-      const token = localStorage.getItem('sentinel_token')
-      const res = await fetch(`/api/jobs/${detail.job_id}/video`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      if (!res.ok) throw new Error(res.status)
-      const url = URL.createObjectURL(await res.blob())
-      videoUrlRef.current = url
-      setVideoUrl(url)
-      return url
-    } catch {
-      setVideoErr(true)
+      const token = authToken()
+      const auth = token ? { Authorization: `Bearer ${token}` } : {}
+      const h = forceH ?? (await getPlaybackProfile()).targetHeight
+      // Poll readiness (probe=1 → tiny response) up to ~60s while transcoding.
+      for (let i = 0; i < 40; i++) {
+        if (prepCancelRef.current) return null
+        const res = await fetch(`/api/jobs/${detail.job_id}/playback?h=${h}&probe=1`, { headers: auth })
+        if (res.status === 202) {
+          setVideoPrep('Preparing playback…')
+          await new Promise(r => setTimeout(r, 1500))
+          continue
+        }
+        if (!res.ok) throw new Error(res.status)
+        // Ready → native streaming URL (range-capable), token in query for the <video>.
+        const streamUrl = `/api/jobs/${detail.job_id}/playback?h=${h}&token=${encodeURIComponent(token)}`
+        setVideoUrl(streamUrl); setVideoPrep('')
+        return streamUrl
+      }
+      throw new Error('transcode timeout')
+    } catch (e) {
+      setVideoErr(true); setVideoErrMsg(`load error (${e?.message ?? '?'})`); setVideoPrep('')
       return null
     } finally {
       setVideoLoading(false)
     }
   }, [detail])
 
-  const playVideo = async () => { setPlaying(false); const u = await ensureVideo(); if (u) setVideoMode(true) }
-  const downloadVideo = async () => {
-    const u = await ensureVideo()
-    if (!u) return
+  const playVideo = async () => {
+    setPlaying(false); retriedRef.current = false
+    const u = await preparePlayback(); if (u) setVideoMode(true)
+  }
+
+  // The rendition is valid H.264, but if THIS browser still can't decode the
+  // chosen rung, drop to 720p and retry once before declaring failure.
+  const onVideoError = e => {
+    const code = e?.target?.error?.code
+    if (!retriedRef.current) {
+      retriedRef.current = true
+      setVideoMode(false)
+      preparePlayback(720).then(u => { if (u) setVideoMode(true) })
+      return
+    }
+    setVideoErr(true); setVideoErrMsg(`decode error (code ${code ?? '?'})`); setVideoMode(false)
+  }
+
+  // Download the ORIGINAL full-resolution clip via a NATIVE link — the browser's
+  // download manager streams it with range/resume, so it can't be cut off by a
+  // dropped fetch (the previous fetch-to-blob approach). Token rides as a query
+  // param since a plain <a> can't set an auth header.
+  const downloadVideo = () => {
+    if (!detail?.job_id) return
+    const url = `/api/jobs/${detail.job_id}/video?token=${encodeURIComponent(authToken())}`
     const a = document.createElement('a')
-    a.href = u; a.download = `job_${detail?.job_id}.mp4`
+    a.href = url; a.download = `job_${detail.job_id}.mp4`
     document.body.appendChild(a); a.click(); a.remove()
   }
 
-  // Reset/cleanup video when the track changes or modal unmounts
+  // Reset video state when the track changes or the modal unmounts.
   useEffect(() => {
-    if (videoUrlRef.current) { URL.revokeObjectURL(videoUrlRef.current); videoUrlRef.current = null }
-    setVideoUrl(null); setVideoMode(false); setVideoErr(false)
+    prepCancelRef.current = true   // stop any in-flight readiness poll
+    setVideoUrl(null); setVideoMode(false); setVideoErr(false); setVideoErrMsg(''); setVideoPrep('')
+    retriedRef.current = false
   }, [trackId])
-  useEffect(() => () => { if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current) }, [])
 
   useEffect(() => {
     if (!autoZoom) return
@@ -422,8 +477,10 @@ function TrackDrawer({ trackId, onClose }) {
                   className="accent-brand w-3 h-3" />
                 Bbox
               </label>
-              <button onClick={downloadVideo} title="Download clip"
-                className="text-slate-400 hover:text-white transition-colors text-base leading-none">⬇</button>
+              <button onClick={downloadVideo} title="Download the original full-resolution clip"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition-colors">
+                ⬇ Download
+              </button>
               <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors text-xl leading-none">✕</button>
             </div>
           </div>
@@ -443,7 +500,8 @@ function TrackDrawer({ trackId, onClose }) {
                   onDoubleClick={handleDoubleClick}
                 >
                   {videoMode && videoUrl && (
-                    <video src={videoUrl} controls autoPlay
+                    <video src={videoUrl} controls autoPlay muted playsInline
+                      onError={onVideoError}
                       className="absolute inset-0 w-full h-full object-contain bg-black z-10" />
                   )}
                   <div style={{
@@ -482,7 +540,7 @@ function TrackDrawer({ trackId, onClose }) {
                   {!videoMode ? (
                     <button onClick={playVideo} disabled={videoLoading}
                       className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-brand hover:bg-brand/80 text-white text-sm font-medium transition-colors disabled:opacity-50">
-                      {videoLoading ? 'Loading…' : '▶ Play video'}
+                      {videoLoading ? (videoPrep || 'Loading…') : '▶ Play video'}
                     </button>
                   ) : (
                     <button onClick={() => setVideoMode(false)}
@@ -495,7 +553,7 @@ function TrackDrawer({ trackId, onClose }) {
                       onChange={e => { setPlaying(false); setDetIdx(Number(e.target.value)) }}
                       className="flex-1 accent-brand" title="scrub detections (moves the bbox on the still)" />
                   )}
-                  {videoErr && <span className="text-xs text-red-400">clip unavailable</span>}
+                  {videoErr && <span className="text-xs text-red-400">playback failed{videoErrMsg ? ` — ${videoErrMsg}` : ''} — try Download</span>}
                 </div>
 
                 <div className="p-4 space-y-4">
@@ -528,7 +586,10 @@ function TrackDrawer({ trackId, onClose }) {
                             onClick={() => { setPlaying(false); setVideoMode(false); setDetIdx(i) }}
                             className={`w-full flex items-center gap-3 px-3 py-2 text-xs text-left transition-colors ${i === detIdx ? 'bg-brand/20 border-l-2 border-brand' : 'hover:bg-slate-800/60'}`}
                           >
-                            <span className="text-slate-500 font-mono w-16 shrink-0">f {d.frame_index}</span>
+                            <span className="text-slate-500 font-mono w-14 shrink-0">f {d.frame_index}</span>
+                            {d.timestamp_ms != null && (
+                              <span className="text-slate-500 font-mono w-12 shrink-0">{(d.timestamp_ms / 1000).toFixed(1)}s</span>
+                            )}
                             <span className="text-slate-300 flex-1 capitalize">{d.class_label ?? '—'}</span>
                             <span className="text-brand font-mono">{fmtConfidence(d.confidence)}</span>
                             {d.bbox && <span className="text-slate-600 font-mono">{d.bbox.w}×{d.bbox.h}</span>}
@@ -909,15 +970,37 @@ function TrackTypeToggle({ value, onChange }) {
   )
 }
 
+// ── Filter persistence ────────────────────────────────────────────────────────
+// Remember the filter-bar selections across reloads so the user doesn't have to
+// re-pick camera / class / time every time the Tracks page remounts.
+const FILTERS_KEY = 'sentinel_trackFilters'
+function loadFilters() {
+  try { return JSON.parse(localStorage.getItem(FILTERS_KEY)) || {} }
+  catch { return {} }
+}
+
 export default function Tracks() {
+  const saved = useMemo(loadFilters, [])
   const [cameras, setCameraList] = useState([])
-  const [selectedCameras, setSelectedCameras] = useState([])
-  const [selectedClasses,  setSelectedClasses]  = useState([])
-  const [trackType, setTrackType] = useState('')   // '' = all, 'moving', 'stationary'
-  const [sort, setSort] = useState('newest')
-  const [timePreset, setTimePreset] = useState('all')
-  const [customRange, setCustomRange] = useState(null)
+  const [selectedCameras, setSelectedCameras] = useState(saved.selectedCameras ?? [])
+  const [selectedClasses,  setSelectedClasses]  = useState(saved.selectedClasses ?? [])
+  const [trackType, setTrackType] = useState(saved.trackType ?? '')   // '' = all, 'moving', 'stationary'
+  const [sort, setSort] = useState(saved.sort ?? 'newest')
+  const [timePreset, setTimePreset] = useState(saved.timePreset ?? 'all')
+  const [customRange, setCustomRange] = useState(() =>
+    saved.customFrom && saved.customTo
+      ? { from: new Date(saved.customFrom), to: new Date(saved.customTo) }
+      : null)
   const [showDateModal, setShowDateModal] = useState(false)
+
+  // Persist the selections whenever they change (revived in loadFilters above).
+  useEffect(() => {
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({
+      selectedCameras, selectedClasses, trackType, sort, timePreset,
+      customFrom: customRange?.from?.toISOString() ?? null,
+      customTo:   customRange?.to?.toISOString() ?? null,
+    }))
+  }, [selectedCameras, selectedClasses, trackType, sort, timePreset, customRange])
 
   // Infinite scroll state
   const [items,   setItems]   = useState([])
@@ -930,6 +1013,11 @@ export default function Tracks() {
 
   // Load camera list once
   useEffect(() => { api.cameras().then(setCameraList).catch(() => {}) }, [])
+
+  // Card auto-zoom — zoom each card into the detected object's best-shot bbox.
+  // On by default; persisted. Turn off to show the whole frame uncropped.
+  const [cardZoom, setCardZoom] = useState(() => localStorage.getItem('sentinel_cardZoom') !== 'false')
+  const toggleCardZoom = v => { setCardZoom(v); localStorage.setItem('sentinel_cardZoom', v ? 'true' : 'false') }
 
   // Auto-refresh when jobs complete — off by default, user can enable
   const [autoRefresh, setAutoRefresh] = useState(false)
@@ -1068,6 +1156,13 @@ export default function Tracks() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none px-2 py-1.5 rounded-lg border border-slate-700 hover:border-slate-600"
+            title="Zoom each card into the detected object (off shows the whole frame)">
+            <input type="checkbox" checked={cardZoom}
+              onChange={e => toggleCardZoom(e.target.checked)}
+              className="accent-brand w-3 h-3" />
+            Auto-zoom
+          </label>
           <button
             onClick={() => setAutoRefresh(v => !v)}
             title={autoRefresh ? 'Auto-refresh on — click to pause' : 'Auto-refresh paused — click to enable'}
@@ -1099,7 +1194,7 @@ export default function Tracks() {
       {/* Grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
         {items.map(track => (
-          <TrackCard key={track.id} track={track} onClick={t => setSelectedId(t.id)} />
+          <TrackCard key={track.id} track={track} zoom={cardZoom} onClick={t => setSelectedId(t.id)} />
         ))}
 
         {/* Skeleton cards while loading first page */}

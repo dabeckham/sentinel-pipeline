@@ -3,8 +3,8 @@ import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -31,13 +31,16 @@ _TERMINAL = {JobStatus.completed, JobStatus.failed, JobStatus.duplicate}
 
 @router.get("/{job_id}/video")
 def get_job_video(
+    request: Request,
     job_id: int,
     _: User = Depends(require_viewer),
     db: Session = Depends(get_db),
 ):
-    """Serve a job's source clip from the ingest mount for in-browser playback
-    and download. The UI fetches it with the JWT header into a blob, so native
-    <video> seeking works client-side. 410 once the source has been purged."""
+    """Serve a job's source clip from the ingest mount for download (and direct
+    playback). Supports HTTP range requests so the browser's native download
+    manager / <video> element fetches in chunks and RESUMES after a dropped
+    connection — robust over a lossy LAN link. 410 once the source is purged.
+    Native elements pass the JWT as ?token= (no Authorization header)."""
     job = db.query(Job).filter_by(id=job_id).first()
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -46,7 +49,46 @@ def get_job_video(
     path = job.file_path
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Source video not on disk")
-    return FileResponse(path, media_type="video/mp4", filename=os.path.basename(path))
+
+    filename = os.path.basename(path)
+    file_size = os.path.getsize(path)
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+
+    range_header = request.headers.get("range")
+    if range_header and range_header.startswith("bytes="):
+        try:
+            first, _, last = range_header[len("bytes="):].partition("-")
+            start = int(first) if first else 0
+            end = int(last) if last else file_size - 1
+        except ValueError:
+            raise HTTPException(status_code=416, detail="Invalid range")
+        end = min(end, file_size - 1)
+        if start > end or start >= file_size:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+        length = end - start + 1
+
+        def _iter():
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(262144, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            _iter(), status_code=206, media_type="video/mp4",
+            headers={**base_headers,
+                     "Content-Range": f"bytes {start}-{end}/{file_size}",
+                     "Content-Length": str(length)},
+        )
+
+    return FileResponse(path, media_type="video/mp4", filename=filename, headers=base_headers)
 
 
 def _job_to_response(job: Job, track_count: int | None = None) -> JobResponse:
