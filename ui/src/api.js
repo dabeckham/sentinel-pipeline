@@ -31,6 +31,7 @@ async function req(method, path, body) {
 export const api = {
   login: (username, password) => req('POST', '/auth/login', { username, password }),
   stats: () => req('GET', '/stats'),
+  storage: () => req('GET', '/metrics/storage'),
   jobs: (page = 1, pageSize = 25, status = []) => {
     const statuses = Array.isArray(status) ? status : (status ? [status] : [])
     const statusQs = statuses.map(s => `&status=${encodeURIComponent(s)}`).join('')

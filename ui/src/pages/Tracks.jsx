@@ -44,14 +44,17 @@ function fmtTime(iso) {
     timeZone: 'UTC',
   })
 }
+// The whole custom-range UI operates in OSD/UTC time (the same clock shown on the
+// cards via fmtTime). Format dates/times in UTC so what the user picks is what
+// they filter — picking 15:00 means clips recorded at 15:00 OSD, not 15:00 local.
 function toDateStr(d) {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
 }
 function toTimeStr(d) {
-  return d.toTimeString().slice(0, 5)
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
 }
 
 // ── Snapshot image with no-flicker crossfade ──────────────────────────────────
@@ -785,8 +788,8 @@ function DateRangeModal({ initialFrom, initialTo, cameras, classes, onApply, onC
   const [toDate,   setToDate]   = useState(toDateStr(defaultTo))
   const [fromTime, setFromTime] = useState(toTimeStr(defaultFrom))
   const [toTime,   setToTime]   = useState(toTimeStr(defaultTo))
-  const [calYear,  setCalYear]  = useState(now.getFullYear())
-  const [calMonth, setCalMonth] = useState(now.getMonth() + 1)
+  const [calYear,  setCalYear]  = useState(now.getUTCFullYear())
+  const [calMonth, setCalMonth] = useState(now.getUTCMonth() + 1)
   const [activeDays, setActiveDays] = useState([])
   const [phase, setPhase] = useState('from')  // 'from' | 'to'
 
@@ -823,8 +826,10 @@ function DateRangeModal({ initialFrom, initialTo, cameras, classes, onApply, onC
   }
 
   const handleApply = () => {
-    const from = new Date(`${fromDate}T${fromTime}:00`)
-    const to   = new Date(`${toDate}T${toTime}:00`)
+    // Trailing Z → parse the entered date+time as UTC (= OSD time on the cards),
+    // not the browser's local zone (that was the ~5-hour offset bug).
+    const from = new Date(`${fromDate}T${fromTime}:00Z`)
+    const to   = new Date(`${toDate}T${toTime}:00Z`)
     if (isNaN(from) || isNaN(to)) return
     onApply(from, to)
   }
@@ -916,17 +921,27 @@ function TimeFilter({ preset, customRange, onPresetChange, onCustomOpen }) {
   ]
 
   return (
-    <select
-      value={preset}
-      onChange={e => {
-        const v = e.target.value
-        if (v === 'custom') { onCustomOpen(); return }
-        onPresetChange(v)
-      }}
-      className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand"
-    >
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+    <div className="flex items-center gap-1">
+      <select
+        value={preset}
+        onChange={e => {
+          const v = e.target.value
+          if (v === 'custom') { onCustomOpen(); return }
+          onPresetChange(v)
+        }}
+        className="bg-slate-800 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand"
+      >
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      {/* Re-selecting the already-selected "Custom…" option doesn't fire onChange,
+          so this edit button reopens the calendar to change an applied range. */}
+      {preset === 'custom' && (
+        <button onClick={onCustomOpen} title="Edit date range"
+          className="text-sm px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:border-brand hover:text-white transition-colors">
+          ✎
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -937,7 +952,8 @@ function getDateRange(preset, customRange) {
   const now = new Date()
   switch (preset) {
     case 'today': {
-      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      // OSD/UTC day start (matches the camera clock shown on cards).
+      const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
       return { from_dt: start.toISOString(), to_dt: now.toISOString() }
     }
     case 'week':

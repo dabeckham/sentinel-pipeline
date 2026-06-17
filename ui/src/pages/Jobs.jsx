@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { api } from '../api.js'
 
 const STATUS_COLORS = {
@@ -317,17 +317,30 @@ function BulkActions({ onRefresh }) {
 const PAGE_SIZE      = 50
 const DEFAULT_WIDTHS = { ID: 60, Camera: 130, File: 240, Status: 160, 'In status': 110, Created: 170, Completed: 170, Tracks: 70, Actions: 170 }
 
+// Remember the Jobs view settings (status filter + column widths) across reloads.
+const SETTINGS_KEY = 'sentinel_jobFilters'
+function loadJobSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {} }
+  catch { return {} }
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function Jobs() {
+  const saved = useMemo(loadJobSettings, [])
   const [items, setItems]               = useState([])
   const [total, setTotal]               = useState(null)
   const [hasMore, setHasMore]           = useState(true)
   const [nextPage, setNextPage]         = useState(1)
-  const [statusFilter, setStatusFilter] = useState([])   // [] = all statuses
+  const [statusFilter, setStatusFilter] = useState(saved.statusFilter ?? [])   // [] = all statuses
   const [initialLoading, setInitialLoading] = useState(true)
   const [loadingMore, setLoadingMore]   = useState(false)
-  const [colWidths, setColWidths]       = useState(DEFAULT_WIDTHS)
+  const [colWidths, setColWidths]       = useState({ ...DEFAULT_WIDTHS, ...(saved.colWidths || {}) })
   const [statusSince, setStatusSince]   = useState({})
+
+  // Persist view settings whenever they change (rehydrated in loadJobSettings).
+  useEffect(() => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ statusFilter, colWidths }))
+  }, [statusFilter, colWidths])
 
   const prevStatusRef   = useRef({})
   const pollRef         = useRef(null)

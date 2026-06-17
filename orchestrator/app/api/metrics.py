@@ -7,11 +7,13 @@ GPU data is collected via nvidia-smi subprocess (no extra library needed).
 import asyncio
 import json
 import subprocess
+import time
 from typing import AsyncGenerator
 
 import psutil
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from sqlalchemy import text
 
 from app.auth.deps import require_viewer
 from app.models.user import User
@@ -118,3 +120,63 @@ async def metrics_snapshot(
     psutil.cpu_percent(interval=None)
     await asyncio.sleep(0.5)
     return await asyncio.to_thread(_collect)
+
+
+# ── Storage usage (admin) ─────────────────────────────────────────────────────
+# Postgres DB size + MinIO bucket sizes, so admins can watch data growth (the
+# snapshot/image buckets grow fastest, especially with per-detection frames).
+# Listing object sizes is O(objects), so the result is cached with a TTL.
+_storage_cache: dict = {"ts": 0.0, "data": None}
+_STORAGE_TTL = 300.0
+
+
+def _postgres_bytes() -> int | None:
+    from app.db import SessionLocal
+    try:
+        db = SessionLocal()
+        try:
+            return int(db.execute(text("SELECT pg_database_size(current_database())")).scalar())
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
+def _minio_usage() -> list[dict]:
+    from app.minio_client import get_minio
+    out: list[dict] = []
+    try:
+        mc = get_minio()
+        for b in mc.list_buckets():
+            n = total = 0
+            try:
+                for obj in mc.list_objects(b.name, recursive=True):
+                    n += 1
+                    total += (obj.size or 0)
+            except Exception:
+                pass
+            out.append({"bucket": b.name, "objects": n, "bytes": total})
+    except Exception:
+        pass
+    return out
+
+
+def _storage_collect() -> dict:
+    pg = _postgres_bytes()
+    buckets = _minio_usage()
+    return {
+        "postgres_bytes": pg,
+        "buckets": buckets,
+        "minio_total_bytes": sum(b["bytes"] for b in buckets),
+    }
+
+
+@router.get("/storage")
+async def metrics_storage(_: User = Depends(require_viewer)):
+    """Postgres + MinIO storage breakdown for the admin sidebar. Cached (TTL)
+    because summing bucket object sizes scans the whole bucket."""
+    now = time.time()
+    if _storage_cache["data"] is None or now - _storage_cache["ts"] > _STORAGE_TTL:
+        _storage_cache["data"] = await asyncio.to_thread(_storage_collect)
+        _storage_cache["ts"] = now
+    return {**_storage_cache["data"], "cached_age_s": round(time.time() - _storage_cache["ts"])}
