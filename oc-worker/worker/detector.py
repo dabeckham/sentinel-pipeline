@@ -269,17 +269,34 @@ def process_job_video(
     scale_x = orig_w / decode_width
     scale_y = orig_h / int(orig_h * (decode_width / orig_w))
 
+    # ── De-fragmentation (issue #59) — track over a CONTIGUOUS frame run ──────
+    # ByteTrack advances its Kalman filter one step per model.track() call, so
+    # feeding it only the sparse motion frames makes each prediction land far
+    # from the object → re-id under a new track id → one vehicle splits into many
+    # short "stationary" fragments. Run the tracker on EVERY frame across the
+    # motion span so predictions are frame-accurate and a vehicle keeps ONE id;
+    # the in-between frames are tracked for continuity only and not persisted, so
+    # the stored detection set (and snapshot storage) stays at the motion cadence.
+    motion_set = set(motion_frame_indices)
+    lo, hi = min(motion_set), max(motion_set)
+    span = hi - lo + 1
+    contiguous = (s.oc_track_contiguous
+                  and span > len(motion_set)
+                  and (s.oc_track_max_span <= 0 or span <= s.oc_track_max_span))
+    track_indices = range(lo, hi + 1) if contiguous else sorted(motion_set)
+
     all_detections: list[dict] = []
+    tracked = 0
 
     log.info("oc_job_processing_start",
              video=video_path,
-             motion_frames=len(motion_frame_indices))
+             motion_frames=len(motion_set),
+             contiguous=contiguous,
+             track_frames=(span if contiguous else len(motion_set)))
 
     t0 = time.perf_counter()
 
-    for frame_index, frame in _pipeline_source(video_path, motion_frame_indices):
-        timestamp_ms = int((frame_index / fps) * 1000)
-
+    for frame_index, frame in _pipeline_source(video_path, track_indices):
         results = model.track(
             source=frame,
             tracker="bytetrack.yaml",
@@ -290,6 +307,12 @@ def process_job_video(
             persist=True,       # keep ByteTrack state across per-frame calls
             verbose=False,
         )
+        tracked += 1
+
+        # Continuity-only frames (between motion frames): advance the tracker but
+        # don't persist their detections.
+        if frame_index not in motion_set:
+            continue
 
         if not results:
             continue
@@ -298,6 +321,7 @@ def process_job_video(
         if r.boxes is None or r.boxes.id is None:
             continue
 
+        timestamp_ms = int((frame_index / fps) * 1000)
         boxes = r.boxes
         for i in range(len(boxes)):
             x1, y1, x2, y2 = boxes.xyxy[i].tolist()
@@ -319,9 +343,10 @@ def process_job_video(
     elapsed = time.perf_counter() - t0
     log.info("oc_job_processing_done",
              video=video_path,
-             motion_frames=len(motion_frame_indices),
+             motion_frames=len(motion_set),
+             tracked_frames=tracked,
              detections=len(all_detections),
              elapsed_s=round(elapsed, 2),
-             fps=round(len(motion_frame_indices) / elapsed, 1) if elapsed > 0 else 0)
+             fps=round(tracked / elapsed, 1) if elapsed > 0 else 0)
 
     return all_detections

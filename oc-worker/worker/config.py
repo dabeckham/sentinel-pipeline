@@ -38,6 +38,19 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
+    # ── De-fragmentation (issue #59) ─────────────────────────────────────────
+    # ByteTrack's Kalman filter advances one step per model.track() call, so
+    # feeding it only the sparse, non-contiguous motion frames makes predictions
+    # land far from the object → re-id under a new track id → one vehicle splits
+    # into many short "stationary" fragments. With this on, the tracker runs on
+    # EVERY frame across the motion span (frame-accurate predictions, stable ids);
+    # detections are still persisted only at the motion-frame cadence.
+    oc_track_contiguous: bool = True
+    # Safety cap: if the motion span exceeds this many frames, fall back to
+    # sparse-frame tracking for that clip (0 = unbounded). Guards against a
+    # pathologically long clip pinning the GPU.
+    oc_track_max_span: int = 0
+
     # YOLO inference image size (pixels, square).  640 = yolo11s native.
     yolo_imgsz: int = 640
 
