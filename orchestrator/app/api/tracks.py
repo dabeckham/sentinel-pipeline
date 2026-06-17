@@ -176,6 +176,7 @@ def get_track(
             {
                 "id": d.id,
                 "frame_index": d.frame_index,
+                "timestamp_ms": d.timestamp_ms,
                 "class_label": d.class_label,
                 "confidence": d.confidence,
                 "bbox": d.bbox,

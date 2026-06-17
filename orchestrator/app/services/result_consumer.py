@@ -364,6 +364,7 @@ def _handle_message(body: bytes):
                 track_id=track.id,
                 job_id=job_id,
                 frame_index=frame_index,
+                timestamp_ms=timestamp_ms,
                 class_label=class_label,
                 confidence=confidence,
                 bbox=bbox,
