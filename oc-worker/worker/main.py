@@ -35,10 +35,6 @@ log = structlog.get_logger()
 
 WORKER_ID = f"{socket.gethostname()}-oc-{os.getpid()}"
 
-# Best-shot tracking: (job_id, track_id) → best score seen so far
-# Score = abs(bbox_center_y / frame_height - 0.5): 0.0 = perfectly centered
-_best_shot_score: dict[tuple[int, int], float] = {}
-
 # Background thread pool for async MinIO uploads (best-shot only)
 _upload_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="minio-upload")
 
@@ -68,11 +64,6 @@ def _upload_best_shot(bucket: str, name: str, frame):
         upload_snapshot(bucket, name, frame)
     except Exception:
         log.exception("oc_best_shot_upload_error", name=name)
-
-
-def _cleanup_best_shots(job_id: int):
-    for k in [k for k in _best_shot_score if k[0] == job_id]:
-        del _best_shot_score[k]
 
 
 def process_job(msg: dict, ch, method):
@@ -105,26 +96,62 @@ def process_job(msg: dict, ch, method):
         detections = process_job_video(video_path, motion_frames)
 
         # ── Best-shot selection ───────────────────────────────────────────────
+        # Per track, pick the most representative frame for the thumbnail: a
+        # large, fully-in-frame, confident view of the object. The old metric
+        # scored only vertical-centeredness, which is degenerate for a high-
+        # mounted camera — objects never reach mid-frame, so it picked whichever
+        # frame the object sat lowest, often jammed against an edge while
+        # entering/exiting. Reward area + confidence; penalise edge-touching.
         cap = cv2.VideoCapture(video_path)
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
         cap.release()
 
-        best_candidates: dict[int, dict] = {}   # track_id → best detection so far
+        _mx, _my = 0.02 * frame_w, 0.02 * frame_h        # 2% edge margin
+        _cx0, _cy0 = frame_w / 2.0, frame_h / 2.0
+
+        def _shot_quality(det) -> float:
+            # Pick the frame where the object is best framed: fully in-frame and as
+            # close to centre as possible. Vehicles cross the frame HORIZONTALLY and
+            # never reach vertical centre on a high-mounted camera, so the vertical
+            # offset is ~constant and must be down-weighted — otherwise it dominates
+            # the distance and the pick drifts off the horizontal centre. NO
+            # confidence term: every kept detection is already above threshold, and
+            # weighting by confidence let a slightly-more-confident off-centre frame
+            # beat the centred one (the reported job-22467 mis-pick).
+            b = det["bbox"]
+            x, y, w, h = b["x"], b["y"], b["w"], b["h"]
+            cx, cy = x + w / 2.0, y + h / 2.0
+            ndx = (cx - _cx0) / _cx0                 # 0 at centre, ±1 at a left/right edge
+            ndy = (cy - _cy0) / _cy0 * 0.35          # vertical weighted ~1/3 of horizontal
+            centred = 1.0 - min(1.0, (ndx * ndx + ndy * ndy) ** 0.5)
+            touches = ((x <= _mx) + (y <= _my)
+                       + (x + w >= frame_w - _mx) + (y + h >= frame_h - _my))
+            in_frame = 1.0 if touches == 0 else 0.4 ** touches   # heavy edge penalty
+            return in_frame * centred
+
+        best_candidates: dict[int, dict] = {}   # track_id → best detection
+        _best_quality: dict[int, float] = {}
         for det in detections:
-            track_id = det["track_id"]
-            bbox_cy  = det["bbox"]["y"] + det["bbox"]["h"] / 2
-            score    = abs(bbox_cy / frame_h - 0.5)
-            key      = (job_id, track_id)
-            if score < _best_shot_score.get(key, 1.0):
-                _best_shot_score[key] = score
-                best_candidates[track_id] = det
+            if not det.get("bbox"):
+                continue
+            tid = det["track_id"]
+            q = _shot_quality(det)
+            if q > _best_quality.get(tid, -1.0):
+                _best_quality[tid] = q
+                best_candidates[tid] = det
 
         # Upload best-shot frames (sequential read, only needed frame indices).
         # Collect the futures so we can confirm they land before publishing done.
         upload_futures = []
         if best_candidates:
-            needed_frames = {det["frame_index"]: track_id
-                             for track_id, det in best_candidates.items()}
+            # Several tracks can share their best frame_index (multiple objects
+            # most-centered on the same frame).  Map each frame to a LIST of
+            # track_ids so a collision doesn't silently drop a track's best-shot
+            # — the bug that left DB-referenced snapshots missing from MinIO.
+            needed_frames: dict[int, list[int]] = {}
+            for track_id, det in best_candidates.items():
+                needed_frames.setdefault(det["frame_index"], []).append(track_id)
             max_fi = max(needed_frames)
             cap = cv2.VideoCapture(video_path)
             current = 0
@@ -133,14 +160,14 @@ def process_job(msg: dict, ch, method):
                 if not ok:
                     break
                 if current in needed_frames:
-                    tid  = needed_frames[current]
-                    name = f"{job_id}/track_{tid:06d}_best.jpg"
-                    upload_futures.append(_upload_pool.submit(
-                        _upload_best_shot,
-                        settings.minio_bucket_snapshots,
-                        name,
-                        frame.copy(),
-                    ))
+                    for tid in needed_frames[current]:
+                        name = f"{job_id}/track_{tid:06d}_best.jpg"
+                        upload_futures.append(_upload_pool.submit(
+                            _upload_best_shot,
+                            settings.minio_bucket_snapshots,
+                            name,
+                            frame.copy(),
+                        ))
                 current += 1
             cap.release()
 
@@ -193,7 +220,14 @@ def process_job(msg: dict, ch, method):
         }
         for det in detections:
             det["snapshot_path"] = best_shot_map.get(det["track_id"])
-            det["snapshot_bbox"] = det["bbox"] if det["track_id"] in best_candidates else None
+            # snapshot_bbox must be the bbox of the BEST frame (the one the snapshot
+            # shows), set on that detection ONLY. The old `tid in best_candidates`
+            # test was true for every detection, so the result consumer's
+            # last-write-wins left the track's snapshot_bbox at the LAST position —
+            # the card then auto-zoomed to where the object isn't in the best-shot.
+            det["snapshot_bbox"] = (det["bbox"]
+                                    if best_candidates.get(det["track_id"]) is det
+                                    else None)
 
         ch.basic_publish(
             exchange="",
@@ -210,8 +244,6 @@ def process_job(msg: dict, ch, method):
             properties=pika.BasicProperties(
                 delivery_mode=2, content_type="application/json"),
         )
-
-        _cleanup_best_shots(job_id)
 
         log.info("oc_job_complete",
                  job_id=job_id, detections=len(detections), worker=WORKER_ID)

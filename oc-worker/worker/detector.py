@@ -207,6 +207,27 @@ def _video_meta(video_path: str) -> tuple[float, int, int]:
 # Job processing
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _reset_tracker(model) -> None:
+    """Clear ByteTrack state so each job starts from a clean tracker.
+
+    The worker is long-lived and processes many unrelated clips, but it calls
+    model.track(persist=True) on every frame and NOTHING reset the tracker
+    between jobs. So a clip inherited the previous clip's tracks: the id counter
+    kept climbing across jobs (track ids in the hundreds), and stale tracks from
+    an earlier clip lingered in the lost-track buffer and acted as distractors,
+    splitting a single vehicle across several ids. Resetting per job gives each
+    clip an independent tracker (ids restart at 1), which is what the original
+    "one worker, one job, in order" design assumed but never actually did.
+    """
+    pred = getattr(model, "predictor", None)
+    if pred is not None and getattr(pred, "trackers", None):
+        for tr in pred.trackers:
+            try:
+                tr.reset()
+            except Exception:  # noqa: BLE001 — best-effort; first job has no tracker yet
+                log.warning("tracker_reset_failed")
+
+
 def process_job_video(
     video_path: str,
     motion_frame_indices: list[int],
@@ -226,6 +247,10 @@ def process_job_video(
 
     s     = get_settings()
     model = get_model()
+
+    # Independent tracker per job — never inherit the previous clip's ByteTrack
+    # state (id counter + stale lost tracks), which fragments vehicles.
+    _reset_tracker(model)
 
     fps, orig_w, orig_h = _video_meta(video_path)
 
