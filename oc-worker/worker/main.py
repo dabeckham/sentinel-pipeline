@@ -219,7 +219,14 @@ def process_job(msg: dict, ch, method):
         }
         for det in detections:
             det["snapshot_path"] = best_shot_map.get(det["track_id"])
-            det["snapshot_bbox"] = det["bbox"] if det["track_id"] in best_candidates else None
+            # snapshot_bbox must be the bbox of the BEST frame (the one the snapshot
+            # shows), set on that detection ONLY. The old `tid in best_candidates`
+            # test was true for every detection, so the result consumer's
+            # last-write-wins left the track's snapshot_bbox at the LAST position —
+            # the card then auto-zoomed to where the object isn't in the best-shot.
+            det["snapshot_bbox"] = (det["bbox"]
+                                    if best_candidates.get(det["track_id"]) is det
+                                    else None)
 
         ch.basic_publish(
             exchange="",
