@@ -38,6 +38,36 @@ class Settings(BaseSettings):
     oc_iou_threshold: float = 0.5
     oc_use_gpu: bool = False
 
+    # ── De-fragmentation (issue #59) ─────────────────────────────────────────
+    # ByteTrack's Kalman filter advances one step per model.track() call, so
+    # feeding it only the sparse, non-contiguous motion frames makes predictions
+    # land far from the object → re-id under a new track id → one vehicle splits
+    # into many short "stationary" fragments. With this on, the tracker runs on
+    # EVERY frame across the motion span (frame-accurate predictions, stable ids);
+    # detections are still persisted only at the motion-frame cadence.
+    oc_track_contiguous: bool = True
+    # Safety cap: if the motion span exceeds this many frames, fall back to
+    # sparse-frame tracking for that clip (0 = unbounded). Guards against a
+    # pathologically long clip pinning the GPU.
+    oc_track_max_span: int = 0
+
+    # ── Post-hoc fragment merge (issue #59, the "right way" completion) ──────
+    # Contiguous tracking keeps a MOVING object whole, but a STATIONARY object
+    # still splits when a passing vehicle occludes it: ByteTrack drops its id
+    # during the occlusion and re-ids it as a new short track afterwards. After
+    # tracking, stitch such fragments back together — merge two same-class
+    # tracks when one track's LAST box overlaps the other's FIRST box (IoU) across
+    # a bounded frame gap, so one physical object keeps one track id. The IoU gate
+    # makes this conservative: two distinct vehicles would have to occupy nearly
+    # the same pixels across the gap, which within a single short clip means it is
+    # the same object.
+    oc_merge_fragments: bool = True
+    # Max temporal gap (in source frames) to stitch a fragment across. ~60 ≈ 2s
+    # at 30fps — long enough for a vehicle to pass in front of a parked car.
+    oc_merge_max_gap: int = 60
+    # Min IoU between the earlier track's last box and the later track's first box.
+    oc_merge_min_iou: float = 0.5
+
     # YOLO inference image size (pixels, square).  640 = yolo11s native.
     yolo_imgsz: int = 640
 
